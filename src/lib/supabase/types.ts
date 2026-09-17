@@ -71,3 +71,17 @@ export interface DeviceFirmwareStatus {
   status: FirmwareStatus;
   updated_at: string;
 }
+
+export type DeviceEventType =
+  | "wifi_reconnect"
+  | "dispense_test"
+  | "dispense_payment"
+  | "restart_requested";
+
+export interface DeviceEvent {
+  id: string;
+  device_id: string;
+  type: DeviceEventType;
+  message: string;
+  created_at: string;
+}

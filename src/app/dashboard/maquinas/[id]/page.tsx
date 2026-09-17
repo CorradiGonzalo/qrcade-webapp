@@ -4,7 +4,14 @@ import QRCode from "qrcode";
 import { requireActiveUser } from "@/lib/supabase/auth";
 import { DeviceActions } from "@/components/dashboard/DeviceActions";
 import { FirmwareBanner } from "@/components/dashboard/FirmwareBanner";
-import type { Device, FirmwareVersion } from "@/lib/supabase/types";
+import type { Device, DeviceEvent, FirmwareVersion } from "@/lib/supabase/types";
+
+const EVENT_LABELS: Record<DeviceEvent["type"], string> = {
+  wifi_reconnect: "📶 WiFi",
+  dispense_test: "🧪 Prueba",
+  dispense_payment: "💸 Pago",
+  restart_requested: "⟲ Reinicio",
+};
 
 export default async function DeviceDetailPage(
   props: PageProps<"/dashboard/maquinas/[id]">
@@ -46,6 +53,13 @@ export default async function DeviceDetailPage(
     .eq("device_id", device.id)
     .order("created_at", { ascending: false })
     .limit(20);
+
+  const { data: eventos } = await supabase
+    .from("device_events")
+    .select("type, message, created_at")
+    .eq("device_id", device.id)
+    .order("created_at", { ascending: false })
+    .limit(15);
 
   const acreditados = (pagos ?? []).filter((p) => (p.fichas_dispensed ?? 0) > 0);
   const totalFichas = acreditados.reduce((acc, p) => acc + (p.fichas_dispensed ?? 0), 0);
@@ -173,6 +187,34 @@ export default async function DeviceDetailPage(
                   ))}
                 </div>
               </>
+            )}
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-line bg-surface p-[22px]">
+            <div className="mb-3 text-sm font-bold">Actividad</div>
+            {!eventos || eventos.length === 0 ? (
+              <p className="text-xs text-ink-muted">
+                Todavía no hay eventos registrados — van a aparecer acá
+                reconexiones de WiFi, disparos del relé (prueba o pago) y
+                reinicios pedidos desde el panel.
+              </p>
+            ) : (
+              <div className="space-y-1.5">
+                {eventos.map((e, i) => (
+                  <div
+                    key={i}
+                    className="flex items-start justify-between gap-3 text-xs text-ink-muted"
+                  >
+                    <span className="shrink-0 text-ink-faint">
+                      {new Date(e.created_at).toLocaleString("es-AR")}
+                    </span>
+                    <span className="text-right text-ink">
+                      {EVENT_LABELS[e.type as DeviceEvent["type"]] ?? e.type}{" "}
+                      — {e.message}
+                    </span>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         </div>

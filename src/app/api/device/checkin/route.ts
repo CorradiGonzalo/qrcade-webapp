@@ -2,6 +2,13 @@ import { NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { generateClaimCode } from "@/lib/device-codes";
+import { logDeviceEvent } from "@/lib/device-events";
+
+// Si pasó más que esto desde el check-in anterior, lo tratamos como que la
+// placa se había desconectado y volvió — el check-in normal es cada 5s
+// (CHECKIN_INTERVAL_MS en el firmware), así que un hueco de 20s+ ya es un
+// reinicio o corte de WiFi real, no jitter de red.
+const RECONNECT_GAP_MS = 20000;
 
 /**
  * Check-in periódico de la ESP32. No requiere sesión de usuario: se
@@ -89,6 +96,10 @@ export async function POST(request: Request) {
 
     device = created;
   } else {
+    const gapMs = existing.last_seen_at
+      ? Date.now() - new Date(existing.last_seen_at).getTime()
+      : null;
+
     const { data: updated, error } = await admin
       .from("devices")
       .update(nowFields)
@@ -100,6 +111,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
     device = updated;
+
+    if (gapMs !== null && gapMs >= RECONNECT_GAP_MS && device.status === "claimed") {
+      const segundos = Math.round(gapMs / 1000);
+      const rssi = nowFields.wifi_rssi !== null ? ` (${nowFields.wifi_rssi} dBm)` : "";
+      await logDeviceEvent(
+        admin,
+        device.id,
+        "wifi_reconnect",
+        `Reconectada al WiFi tras ${segundos}s sin check-in${rssi}.`
+      );
+    }
   }
 
   if (device.status === "revoked") {

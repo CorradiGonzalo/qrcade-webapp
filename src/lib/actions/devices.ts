@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { logDeviceEvent } from "@/lib/device-events";
 import type { Device, Profile } from "@/lib/supabase/types";
 import {
   MercadoPagoError,
@@ -223,6 +224,14 @@ export async function requestRestartAction(deviceId: string) {
     created_by: userId,
   });
   if (error) throw new Error(error.message);
+
+  await logDeviceEvent(
+    createAdminClient(),
+    deviceId,
+    "restart_requested",
+    "Reinicio solicitado desde el panel."
+  );
+
   revalidatePath(`/dashboard/maquinas/${deviceId}`);
 }
 
@@ -239,6 +248,16 @@ export async function requestTestDispenseAction(deviceId: string) {
     created_by: userId,
   });
   if (error) throw new Error(error.message);
+
+  // device_events sólo lo inserta el backend con el cliente admin (no hay
+  // policy de insert para el usuario logueado).
+  await logDeviceEvent(
+    createAdminClient(),
+    deviceId,
+    "dispense_test",
+    "Tirando ficha (prueba manual desde el panel)."
+  );
+
   revalidatePath(`/dashboard/maquinas/${deviceId}`);
 }
 

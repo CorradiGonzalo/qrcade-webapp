@@ -363,8 +363,12 @@ void dibujarPantallaConfigPortal() {
   centrarTexto("QRcade_Config", SCREEN_HEIGHT / 2 + 20, COLOR_AMARILLO, 1);
 }
 
-void actualizarPantalla() {
-  if (currentState == previousState) return;
+// OJO: sin valor por default acá — el Arduino IDE autogenera un prototipo a
+// partir de esta misma línea, y si el default queda tanto en el prototipo
+// autogenerado como en esta definición, C++ lo rechaza como "redefinido".
+// Por eso los dos únicos llamados sin forzar pasan explícitamente `false`.
+void actualizarPantalla(bool forzar) {
+  if (currentState == previousState && !forzar) return;
 
   switch (currentState) {
     case SHOW_QR:             dibujarQR(cachedQrData); break;
@@ -531,9 +535,17 @@ void procesarComandos(JsonArray comandos) {
       // quede siempre en el QR fijo, sin cortar con "Pago Exitoso". El
       // relé igual se dispara normalmente.
       triggerCoinPulses(1);
+      // El pico de corriente al enganchar la bobina puede hacer temblar
+      // por una fracción de segundo el riel que comparte con la pantalla
+      // (ambos en 3V3) y dejarla con basura en el buffer. En vez de
+      // depender de que nunca tiemble, forzamos un redibujado completo
+      // apenas termina el pulso — así, si hubo algún glitch momentáneo,
+      // se "autocura" solo en cada dispensado.
+      actualizarPantalla(true);
     } else if (comando.startsWith("dispense:")) {
       int veces = comando.substring(9).toInt();
       triggerCoinPulses(veces > 0 ? veces : 1);
+      actualizarPantalla(true);
     } else {
       logLine("!! Comando desconocido, se ignora: " + comando);
     }
@@ -613,7 +625,7 @@ void chequearSaludYReiniciarSiHaceFalta() {
 void abrirPortalDeConfiguracion() {
   currentState = SHOW_CONFIG_PORTAL;
   previousState = SHOW_BOOT;
-  actualizarPantalla();
+  actualizarPantalla(false);
 
   // IMPORTANTE (parte 1): wm.startConfigPortal() en modo bloqueante corre su
   // propio loop interno durante todo el tiempo que el portal está abierto, y
@@ -721,6 +733,8 @@ void setup() {
   // el WiFi sí estuviera guardado. Por eso hay que poner el modo STA acá
   // arriba, antes de leer nada.
   WiFi.mode(WIFI_STA);
+  delay(100); // le da tiempo al driver de WiFi a terminar de inicializar
+              // antes de confiar en macAddress()/SSID() de acá abajo.
 
   logLine("");
   logLine("========================================");
@@ -809,7 +823,7 @@ void loop() {
     // borrarlas). El estado lo sigue decidiendo resolverEstadoSegunBackend().
   }
 
-  actualizarPantalla();
+  actualizarPantalla(false);
   chequearSaludYReiniciarSiHaceFalta();
 
   if (Serial.available() > 0) {

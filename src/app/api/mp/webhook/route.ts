@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { MercadoPagoError, bloquearPrecioFijo, obtenerPago } from "@/lib/mercadopago";
+import { logDeviceEvent } from "@/lib/device-events";
 import type { Device, Profile } from "@/lib/supabase/types";
 
 /**
@@ -114,6 +115,12 @@ export async function POST(request: Request) {
       device_id: device.id,
       command: `dispense:${fichas}`,
     });
+    await logDeviceEvent(
+      admin,
+      device.id,
+      "dispense_payment",
+      `Pago acreditado de $${pago.transaction_amount} — tirando ${fichas} ficha(s).`
+    );
   } else {
     console.warn(
       `Webhook de MP: pago de $${pago.transaction_amount} en placa ${device.id} sin combo que coincida — no se acredita nada.`
