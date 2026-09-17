@@ -10,6 +10,11 @@ import "server-only";
 const MP_BASE = "https://api.mercadopago.com";
 const TIMEOUT_MS = 8000;
 
+// Dominio público de la app, para armar la URL de webhook que le pasamos
+// a Mercado Pago por orden. Se puede pisar con una env var si algún día
+// hay que apuntar a otro dominio (staging, etc.).
+const WEBHOOK_BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? "https://qrcade.dev";
+
 export class MercadoPagoError extends Error {
   status?: number;
   constructor(message: string, status?: number) {
@@ -116,6 +121,10 @@ export async function buscarOCrearTienda(
   return String(creada.id);
 }
 
+function esperar(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Busca la caja (POS) por external_id; si no existe, la crea. Devuelve el QR dinámico. */
 export async function buscarOCrearCaja(
   token: string,
@@ -133,21 +142,46 @@ export async function buscarOCrearCaja(
     if (qr) return qr;
   }
 
-  const creada = (await mpFetch(token, "/pos", {
-    method: "POST",
-    body: {
-      name: nombreCaja,
-      fixed_amount: true,
-      store_id: storeId,
-      external_id: externalIdCaja,
-      category: 621102,
-    },
-  })) as { qr_code?: string };
+  // Cuando la tienda se acaba de crear, la API de MP a veces tarda un
+  // instante en propagarla internamente y /pos devuelve "Store not found"
+  // aunque la tienda exista — reintentamos unas pocas veces antes de darnos
+  // por vencidos en lugar de hacer fallar todo el guardado.
+  const REINTENTOS = 3;
+  let ultimoError: unknown;
 
-  if (!creada?.qr_code) {
-    throw new MercadoPagoError("Mercado Pago no devolvió el QR de la caja.");
+  for (let intento = 1; intento <= REINTENTOS; intento++) {
+    try {
+      const creada = (await mpFetch(token, "/pos", {
+        method: "POST",
+        body: {
+          name: nombreCaja,
+          fixed_amount: true,
+          // OJO: tiene que ir como NUMBER, no como string. El firmware viejo
+          // (que sí funciona en las 10 placas reales) manda el store_id sin
+          // comillas en el JSON — mandarlo como string hace que MP no lo
+          // matchee contra la tienda recién creada y tire "Store not found"
+          // aunque la tienda exista.
+          store_id: Number(storeId),
+          external_id: externalIdCaja,
+          category: 621102,
+        },
+      })) as { qr_code?: string };
+
+      if (!creada?.qr_code) {
+        throw new MercadoPagoError("Mercado Pago no devolvió el QR de la caja.");
+      }
+      return creada.qr_code;
+    } catch (err) {
+      ultimoError = err;
+      const esStoreNotFound =
+        err instanceof MercadoPagoError && /store not found/i.test(err.message);
+      if (!esStoreNotFound || intento === REINTENTOS) break;
+      await esperar(1500 * intento);
+    }
   }
-  return creada.qr_code;
+
+  if (ultimoError instanceof MercadoPagoError) throw ultimoError;
+  throw new MercadoPagoError("No se pudo crear la caja en Mercado Pago.");
 }
 
 /** Bloquea el QR a un monto fijo — 1 pago = 1 ficha. */
@@ -168,6 +202,10 @@ export async function bloquearPrecioFijo(
         title: titulo,
         description: titulo,
         total_amount: monto,
+        // La API de instore-orders deja pegar la notificación acá mismo,
+        // por orden — así en modo "monto fijo" no dependemos de que el
+        // dueño configure el webhook a mano en su cuenta de MP.
+        notification_url: `${WEBHOOK_BASE_URL}/api/mp/webhook`,
         items: [
           {
             title: titulo,
