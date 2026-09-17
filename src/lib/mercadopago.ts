@@ -51,7 +51,11 @@ async function mpFetch(
         (data && typeof data === "object" && "message" in data
           ? String((data as Record<string, unknown>).message)
           : null) ?? `Mercado Pago respondió ${res.status}`;
-      throw new MercadoPagoError(msg, res.status);
+      // TEMPORAL: pegamos el body crudo de MP al mensaje para poder
+      // diagnosticar en la UI sin acceso a los logs del Worker. Sacar esto
+      // una vez que quede resuelto el tema de "Store not found".
+      const detalle = data ? ` | DEBUG ${res.status} ${path}: ${JSON.stringify(data)}` : "";
+      throw new MercadoPagoError(msg + detalle, res.status);
     }
 
     return data;
@@ -149,22 +153,19 @@ export async function buscarOCrearCaja(
   const REINTENTOS = 3;
   let ultimoError: unknown;
 
+  const bodyEnviado = {
+    name: nombreCaja,
+    fixed_amount: true,
+    store_id: Number(storeId),
+    external_id: externalIdCaja,
+    category: 621102,
+  };
+
   for (let intento = 1; intento <= REINTENTOS; intento++) {
     try {
       const creada = (await mpFetch(token, "/pos", {
         method: "POST",
-        body: {
-          name: nombreCaja,
-          fixed_amount: true,
-          // OJO: tiene que ir como NUMBER, no como string. El firmware viejo
-          // (que sí funciona en las 10 placas reales) manda el store_id sin
-          // comillas en el JSON — mandarlo como string hace que MP no lo
-          // matchee contra la tienda recién creada y tire "Store not found"
-          // aunque la tienda exista.
-          store_id: Number(storeId),
-          external_id: externalIdCaja,
-          category: 621102,
-        },
+        body: bodyEnviado,
       })) as { qr_code?: string };
 
       if (!creada?.qr_code) {
@@ -180,7 +181,12 @@ export async function buscarOCrearCaja(
     }
   }
 
-  if (ultimoError instanceof MercadoPagoError) throw ultimoError;
+  // TEMPORAL: agregamos el storeId recibido y el body exacto que mandamos a
+  // /pos, para diagnosticar en la UI. Sacar junto con el debug de mpFetch.
+  if (ultimoError instanceof MercadoPagoError) {
+    ultimoError.message += ` | storeId recibido="${storeId}" body=${JSON.stringify(bodyEnviado)}`;
+    throw ultimoError;
+  }
   throw new MercadoPagoError("No se pudo crear la caja en Mercado Pago.");
 }
 
