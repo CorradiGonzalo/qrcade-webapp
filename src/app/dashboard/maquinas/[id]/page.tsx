@@ -11,6 +11,7 @@ const EVENT_LABELS: Record<DeviceEvent["type"], string> = {
   dispense_test: "🧪 Prueba",
   dispense_payment: "💸 Pago",
   restart_requested: "⟲ Reinicio",
+  firmware_update: "🆕 Firmware",
 };
 
 export default async function DeviceDetailPage(

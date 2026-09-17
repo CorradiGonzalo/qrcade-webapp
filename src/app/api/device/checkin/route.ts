@@ -10,6 +10,13 @@ import { logDeviceEvent } from "@/lib/device-events";
 // reinicio o corte de WiFi real, no jitter de red.
 const RECONNECT_GAP_MS = 20000;
 
+// Cuánto esperamos con una versión en "downloading" antes de volver a
+// mandarle la URL del .bin a la placa. Cubre el caso de que la descarga
+// haya fallado (WiFi débil, corte de luz a mitad de la descarga, etc.) sin
+// mandarle la misma URL en CADA check-in mientras tanto (eso sí sería un
+// martilleo inútil de la red y del backend cada 5s).
+const OTA_RETRY_MS = 10 * 60 * 1000; // 10 min
+
 /**
  * Check-in periódico de la ESP32. No requiere sesión de usuario: se
  * autentica con la "clave de fábrica" embebida en el firmware que
@@ -157,6 +164,8 @@ export async function POST(request: Request) {
       );
   }
 
+  const firmwareUpdate = await resolverFirmwareUpdate(admin, device, nowFields.firmware_version);
+
   return NextResponse.json({
     status: "claimed",
     is_paused: device.is_paused,
@@ -166,5 +175,96 @@ export async function POST(request: Request) {
     // configurar".
     qr_data: device.qr_data,
     commands: (pendingCommands ?? []).map((c) => c.command),
+    // Sólo presente cuando hay una versión aceptada por el dueño para
+    // instalar (o cuyo intento anterior de descarga se dio por perdido).
+    // La ESP la descarga con HTTPUpdate y se reinicia sola si sale bien —
+    // ver ejecutarActualizacionFirmware() en el .ino.
+    ...(firmwareUpdate ? { firmware_update: firmwareUpdate } : {}),
   });
+}
+
+/**
+ * Resuelve si hay una actualización de firmware para mandarle a la placa
+ * en este check-in, y lleva la máquina de estados de
+ * device_firmware_status ('accepted' -> 'downloading' -> 'updated').
+ *
+ *  - El dueño acepta una versión desde el panel -> queda en 'accepted'.
+ *  - Primer check-in tras aceptar: se la mandamos y pasa a 'downloading'.
+ *  - Si sigue en 'downloading' más de OTA_RETRY_MS (la descarga anterior
+ *    se debe haber perdido: corte de luz, WiFi débil, etc.), se la
+ *    volvemos a mandar.
+ *  - Cuando la placa reporta en un check-in la MISMA versión que estaba
+ *    'downloading' (o sea: ya se flasheó y reinició sola), la marcamos
+ *    'updated' y lo logueamos en device_events.
+ */
+async function resolverFirmwareUpdate(
+  admin: ReturnType<typeof createAdminClient>,
+  device: { id: string },
+  reportedFirmwareVersion: string | null
+) {
+  const { data: pendiente } = await admin
+    .from("device_firmware_status")
+    .select("status, updated_at, firmware_version_id, firmware_versions(version, bin_url, changelog)")
+    .eq("device_id", device.id)
+    .in("status", ["accepted", "downloading"])
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!pendiente) return null;
+
+  const fv = Array.isArray(pendiente.firmware_versions)
+    ? pendiente.firmware_versions[0]
+    : pendiente.firmware_versions;
+
+  if (!fv) return null;
+
+  // La placa ya reportó la versión que estábamos esperando -> ya se
+  // actualizó sola y reinició. Cerramos el ciclo.
+  if (
+    pendiente.status === "downloading" &&
+    reportedFirmwareVersion &&
+    reportedFirmwareVersion === fv.version
+  ) {
+    await admin
+      .from("device_firmware_status")
+      .update({ status: "updated", updated_at: new Date().toISOString() })
+      .eq("device_id", device.id)
+      .eq("firmware_version_id", pendiente.firmware_version_id);
+
+    await logDeviceEvent(
+      admin,
+      device.id,
+      "firmware_update",
+      `Actualizada a ${fv.version}.`
+    );
+
+    return null;
+  }
+
+  const debeMandarla =
+    pendiente.status === "accepted" ||
+    (pendiente.status === "downloading" &&
+      Date.now() - new Date(pendiente.updated_at).getTime() > OTA_RETRY_MS);
+
+  if (!debeMandarla) return null;
+
+  const yaEstabaDescargando = pendiente.status === "downloading";
+
+  await admin
+    .from("device_firmware_status")
+    .update({ status: "downloading", updated_at: new Date().toISOString() })
+    .eq("device_id", device.id)
+    .eq("firmware_version_id", pendiente.firmware_version_id);
+
+  await logDeviceEvent(
+    admin,
+    device.id,
+    "firmware_update",
+    yaEstabaDescargando
+      ? `Reintentando descarga de ${fv.version} (no se vio confirmación de la anterior).`
+      : `Descargando ${fv.version}...`
+  );
+
+  return { version: fv.version, bin_url: fv.bin_url };
 }

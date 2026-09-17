@@ -81,6 +81,7 @@
 #include <SPI.h>
 #include <Arduino_GFX_Library.h>
 #include <esp_task_wdt.h>
+#include <HTTPUpdate.h>
 #include "qrcode_impl.h"
 
 // ============================================================================
@@ -199,6 +200,44 @@ static const unsigned long PAID_DURATION_MS = 4000;
 //                          WIFIMANAGER (sólo bajo demanda)
 // ============================================================================
 WiFiManager wm;
+
+// ============================================================================
+//                    PERSISTENCIA MANUAL DE CREDENCIALES WIFI
+// ============================================================================
+// El guardado nativo (WiFi.persistent + NVS del propio driver) resultó poco
+// confiable en esta combinación (WiFiManager con el portal en modo no
+// bloqueante): incluso forzando WiFi.persistent(true) + WiFi.begin(ssid,pass)
+// justo después de un portal exitoso, se confirmó con hardware real que las
+// credenciales NO sobreviven un apagado y encendido real (la placa vuelve
+// directo al portal). Para dejar de depender de esa persistencia nativa,
+// guardamos nosotros mismos el SSID/password en un namespace propio de
+// Preferences (que usa NVS por debajo, pero con nuestro propio control total
+// de cuándo se escribe y se lee) y los usamos como única fuente de verdad
+// para reconectar al arrancar.
+Preferences wifiPrefs;
+static const char *WIFI_PREFS_NS = "wifi";
+static const char *WIFI_PREFS_KEY_SSID = "ssid";
+static const char *WIFI_PREFS_KEY_PASS = "pass";
+
+void guardarCredencialesWifi(const String &ssid, const String &pass) {
+  if (ssid.length() == 0) {
+    logLine("!! guardarCredencialesWifi: SSID vacio, no se guarda nada.");
+    return;
+  }
+  wifiPrefs.begin(WIFI_PREFS_NS, false);
+  wifiPrefs.putString(WIFI_PREFS_KEY_SSID, ssid);
+  wifiPrefs.putString(WIFI_PREFS_KEY_PASS, pass);
+  wifiPrefs.end();
+  logLine(">> Credenciales WiFi guardadas manualmente en Preferences (SSID: " + ssid + ").");
+}
+
+bool leerCredencialesWifi(String &ssidOut, String &passOut) {
+  wifiPrefs.begin(WIFI_PREFS_NS, true); // sólo lectura
+  ssidOut = wifiPrefs.getString(WIFI_PREFS_KEY_SSID, "");
+  passOut = wifiPrefs.getString(WIFI_PREFS_KEY_PASS, "");
+  wifiPrefs.end();
+  return ssidOut.length() > 0;
+}
 
 // ============================================================================
 //                          UTILIDADES DE LOG
@@ -484,7 +523,7 @@ bool backendCheckin(JsonDocument &respuesta) {
   }
 
   String payload = "";
-  payload.reserve(1024);
+  payload.reserve(2048); // la respuesta ahora puede traer firmware_update (version + bin_url)
   unsigned long tLectura0 = millis();
   while ((client.connected() || client.available()) &&
          millis() - tLectura0 < RESPUESTA_DEADLINE_MS) {
@@ -552,8 +591,69 @@ void procesarComandos(JsonArray comandos) {
   }
 }
 
+// ============================================================================
+//              ACTUALIZACIÓN REMOTA DE FIRMWARE (OTA)
+// ============================================================================
+// El backend sólo manda "firmware_update" en la respuesta del check-in
+// cuando el dueño aceptó una versión nueva desde el panel (ver
+// resolverFirmwareUpdate() en api/device/checkin). Bajamos el .bin con
+// HTTPUpdate (misma lógica TLS "insecure" que el check-in — self-signed no
+// aplica acá, es sólo para no lidiar con el certificado del CDN) y, si sale
+// bien, HTTPUpdate reinicia la placa sola con el nuevo firmware adentro. El
+// backend se entera de que quedó instalado en el PRÓXIMO check-in, cuando
+// ve que firmware_version ya coincide con la versión que esperaba.
+//
+// OJO placa por placa: esto requiere que el Partition Scheme elegido en
+// Arduino IDE (Tools > Partition Scheme) tenga DOS particiones de app (OTA
+// habilitado) — el típico "Default 4MB with spiffs" sirve; "Huge APP" NO,
+// porque le da toda la flash a una sola partición y no deja lugar para la
+// copia nueva mientras se descarga. Si Update.begin() falla por falta de
+// espacio, va a quedar bien clarito en el log de abajo.
+bool actualizacionFirmwareEnCurso = false;
+
+void ejecutarActualizacionFirmware(const String &version, const String &binUrl) {
+  if (actualizacionFirmwareEnCurso) return; // por las dudas, nunca solapar
+  actualizacionFirmwareEnCurso = true;
+
+  logLine(">> Firmware: actualizacion disponible (" + version + "). Descargando...");
+  logLine(">> Firmware: " + binUrl);
+
+  currentState = SHOW_BOOT;
+  previousState = SHOW_UNCLAIMED;
+  dibujarPantallaBoot("Actualizando...");
+
+  // Igual que con el portal de config: esto es bloqueante y puede tardar
+  // más que el timeout del watchdog en una red lenta, así que sacamos esta
+  // tarea del watchdog mientras dura la descarga+flasheo.
+  esp_task_wdt_delete(NULL);
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  httpUpdate.rebootOnUpdate(false); // reiniciamos nosotros, después de loguear el resultado
+
+  t_httpUpdate_return resultado = httpUpdate.update(client, binUrl);
+
+  esp_task_wdt_add(NULL);
+
+  switch (resultado) {
+    case HTTP_UPDATE_FAILED:
+      logLine("!! Firmware: fallo la actualizacion (" + String(httpUpdate.getLastErrorString().c_str()) + "). Sigo con la version actual.");
+      actualizacionFirmwareEnCurso = false;
+      break;
+    case HTTP_UPDATE_NO_UPDATES:
+      logLine("!! Firmware: el servidor no devolvio un .bin valido.");
+      actualizacionFirmwareEnCurso = false;
+      break;
+    case HTTP_UPDATE_OK:
+      logLine(">> Firmware: actualizacion OK. Reiniciando con " + version + "...");
+      delay(300);
+      ESP.restart();
+      break;
+  }
+}
+
 void hacerCheckin() {
-  StaticJsonDocument<1024> doc;
+  StaticJsonDocument<2048> doc;
   bool ok = backendCheckin(doc);
 
   if (!ok) {
@@ -579,6 +679,17 @@ void hacerCheckin() {
 
     if (doc["commands"].is<JsonArray>()) {
       procesarComandos(doc["commands"].as<JsonArray>());
+    }
+
+    // Se procesa DESPUÉS de los comandos y devuelve el control recién
+    // cuando termina (éxito, falla, o reinicio) — nunca hay un check-in
+    // superpuesto con una descarga en curso.
+    if (doc["firmware_update"].is<JsonObject>()) {
+      String nuevaVersion = doc["firmware_update"]["version"] | "";
+      String binUrl = doc["firmware_update"]["bin_url"] | "";
+      if (nuevaVersion.length() > 0 && binUrl.length() > 0) {
+        ejecutarActualizacionFirmware(nuevaVersion, binUrl);
+      }
     }
   }
 }
@@ -672,14 +783,16 @@ void abrirPortalDeConfiguracion() {
   // OJO — el bug de fondo detrás de "no reconecta sola tras apagar y
   // prender": con el portal en modo no bloqueante, WiFiManager a veces NO
   // termina grabando las credenciales nuevas en la memoria persistente
-  // (NVS) de la ESP32 — quedan sólo en RAM para esta sesión. Por eso
-  // conectaba perfecto mientras seguía prendida, pero se "olvidaba" en
-  // cualquier reinicio (por SW o por corte real de luz), sin importar el
-  // fix anterior del orden de WiFi.mode(). Acá forzamos el guardado
-  // nosotros mismos, explícitamente, con las credenciales que ya están
-  // activas — sin depender de que la librería lo haya hecho bien.
-  WiFi.persistent(true);
-  WiFi.begin(WiFi.SSID().c_str(), WiFi.psk().c_str());
+  // (NVS) de la ESP32 — quedan sólo en RAM para esta sesión. Ya se probó
+  // forzar WiFi.persistent(true) + WiFi.begin(WiFi.SSID(), WiFi.psk()) acá
+  // mismo y NO alcanzó: confirmado con hardware real que la placa sigue
+  // "olvidándose" tras un apagado/encendido real. Dejamos de confiar por
+  // completo en la persistencia nativa del driver/WiFiManager y guardamos
+  // las credenciales nosotros mismos, a mano, en nuestro propio namespace
+  // de Preferences — usando los getters dedicados de WiFiManager
+  // (más confiables que WiFi.SSID()/WiFi.psk() para leer lo que se acaba
+  // de configurar en el portal).
+  guardarCredencialesWifi(wm.getWiFiSSID(), wm.getWiFiPass());
 }
 
 bool botonConfigMantenidoAlBoot() {
@@ -735,20 +848,13 @@ void setup() {
   dibujarPantallaBoot("Iniciando...");
   previousState = SHOW_UNCLAIMED; // fuerza primer redibujado real más abajo
 
-  // OJO, este es el bug real detrás de "no reconecta sola al WiFi guardado":
-  // en el ESP32, WiFi.macAddress() y WiFi.SSID() sólo devuelven datos reales
-  // una vez que el driver de WiFi arrancó (WiFi.mode(...)). Si los leemos
-  // antes, devuelven vacío/00:00:00:00:00:00 — y como hayCredenciales se
-  // calculaba ANTES de poner el modo STA (que sólo se seteaba más abajo,
-  // en la rama que ya asumía que había credenciales), la placa "veía" que
-  // no había nada guardado y abría el portal en TODOS los arranques, aunque
-  // el WiFi sí estuviera guardado. Por eso hay que poner el modo STA acá
-  // arriba, antes de leer nada.
+  // OJO, este fue uno de los bugs detrás de "no reconecta sola al WiFi
+  // guardado": en el ESP32, WiFi.macAddress() sólo devuelve datos reales
+  // una vez que el driver de WiFi arrancó (WiFi.mode(...)). Por eso hay que
+  // poner el modo STA acá arriba, antes de leer nada.
   WiFi.mode(WIFI_STA);
-  WiFi.persistent(true); // asegura que cualquier credencial que se use
-                          // quede grabada en NVS, no sólo en RAM.
   delay(100); // le da tiempo al driver de WiFi a terminar de inicializar
-              // antes de confiar en macAddress()/SSID() de acá abajo.
+              // antes de confiar en macAddress() de acá abajo.
 
   logLine("");
   logLine("========================================");
@@ -763,14 +869,24 @@ void setup() {
 
   esp_task_wdt_reset();
 
-  bool hayCredenciales = WiFi.SSID().length() > 0;
+  // Ya no confiamos en WiFi.SSID() (lectura de lo que el driver nativo haya
+  // persistido, poco confiable en este setup) — leemos nuestras propias
+  // credenciales guardadas a mano en Preferences (ver
+  // guardarCredencialesWifi()/leerCredencialesWifi() más arriba).
+  String ssidGuardado, passGuardado;
+  bool hayCredenciales = leerCredencialesWifi(ssidGuardado, passGuardado);
+  if (hayCredenciales) {
+    logLine(">> Credenciales guardadas encontradas para SSID: " + ssidGuardado);
+  } else {
+    logLine(">> No hay credenciales guardadas en Preferences.");
+  }
 
   if (pedirPortal || !hayCredenciales) {
     abrirPortalDeConfiguracion();
     // abrirPortalDeConfiguracion() sólo retorna si conectó con éxito.
   } else {
     dibujarPantallaBoot("Conectando WiFi...");
-    WiFi.begin();
+    WiFi.begin(ssidGuardado.c_str(), passGuardado.c_str());
 
     unsigned long tConexion0 = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - tConexion0 < 20000) {

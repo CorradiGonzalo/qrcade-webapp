@@ -76,7 +76,8 @@ export type DeviceEventType =
   | "wifi_reconnect"
   | "dispense_test"
   | "dispense_payment"
-  | "restart_requested";
+  | "restart_requested"
+  | "firmware_update";
 
 export interface DeviceEvent {
   id: string;
