@@ -668,6 +668,18 @@ void abrirPortalDeConfiguracion() {
   }
 
   logLine(">> Portal de configuracion: WiFi configurado con exito.");
+
+  // OJO — el bug de fondo detrás de "no reconecta sola tras apagar y
+  // prender": con el portal en modo no bloqueante, WiFiManager a veces NO
+  // termina grabando las credenciales nuevas en la memoria persistente
+  // (NVS) de la ESP32 — quedan sólo en RAM para esta sesión. Por eso
+  // conectaba perfecto mientras seguía prendida, pero se "olvidaba" en
+  // cualquier reinicio (por SW o por corte real de luz), sin importar el
+  // fix anterior del orden de WiFi.mode(). Acá forzamos el guardado
+  // nosotros mismos, explícitamente, con las credenciales que ya están
+  // activas — sin depender de que la librería lo haya hecho bien.
+  WiFi.persistent(true);
+  WiFi.begin(WiFi.SSID().c_str(), WiFi.psk().c_str());
 }
 
 bool botonConfigMantenidoAlBoot() {
@@ -733,6 +745,8 @@ void setup() {
   // el WiFi sí estuviera guardado. Por eso hay que poner el modo STA acá
   // arriba, antes de leer nada.
   WiFi.mode(WIFI_STA);
+  WiFi.persistent(true); // asegura que cualquier credencial que se use
+                          // quede grabada en NVS, no sólo en RAM.
   delay(100); // le da tiempo al driver de WiFi a terminar de inicializar
               // antes de confiar en macAddress()/SSID() de acá abajo.
 
