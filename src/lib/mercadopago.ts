@@ -51,11 +51,7 @@ async function mpFetch(
         (data && typeof data === "object" && "message" in data
           ? String((data as Record<string, unknown>).message)
           : null) ?? `Mercado Pago respondió ${res.status}`;
-      // TEMPORAL: pegamos el body crudo de MP al mensaje para poder
-      // diagnosticar en la UI sin acceso a los logs del Worker. Sacar esto
-      // una vez que quede resuelto el tema de "Store not found".
-      const detalle = data ? ` | DEBUG ${res.status} ${path}: ${JSON.stringify(data)}` : "";
-      throw new MercadoPagoError(msg + detalle, res.status);
+      throw new MercadoPagoError(msg, res.status);
     }
 
     return data;
@@ -94,10 +90,19 @@ export async function buscarOCrearTienda(
   externalIdTienda: string,
   nombreLocal: string
 ): Promise<string> {
-  const busqueda = (await mpFetch(
-    token,
-    `/users/${userId}/stores/search?external_id=${encodeURIComponent(externalIdTienda)}`
-  )) as { results?: Array<{ id: number | string }> };
+  // OJO: si no existe NINGUNA tienda con ese external_id, este endpoint de
+  // MP no devuelve 200 con resultados vacíos — devuelve 404 directamente.
+  // Un 404 acá es un resultado válido ("no existe todavía"), no un error:
+  // lo tratamos como búsqueda vacía y seguimos a crearla.
+  let busqueda: { results?: Array<{ id: number | string }> } | null = null;
+  try {
+    busqueda = (await mpFetch(
+      token,
+      `/users/${userId}/stores/search?external_id=${encodeURIComponent(externalIdTienda)}`
+    )) as { results?: Array<{ id: number | string }> };
+  } catch (err) {
+    if (!(err instanceof MercadoPagoError && err.status === 404)) throw err;
+  }
 
   if (busqueda?.results && busqueda.results.length > 0) {
     return String(busqueda.results[0].id);
@@ -136,10 +141,15 @@ export async function buscarOCrearCaja(
   externalIdCaja: string,
   nombreCaja: string
 ): Promise<string> {
-  const busqueda = (await mpFetch(
-    token,
-    `/pos?external_id=${encodeURIComponent(externalIdCaja)}`
-  )) as { results?: Array<{ qr_code?: string }> };
+  let busqueda: { results?: Array<{ qr_code?: string }> } | null = null;
+  try {
+    busqueda = (await mpFetch(
+      token,
+      `/pos?external_id=${encodeURIComponent(externalIdCaja)}`
+    )) as { results?: Array<{ qr_code?: string }> };
+  } catch (err) {
+    if (!(err instanceof MercadoPagoError && err.status === 404)) throw err;
+  }
 
   if (busqueda?.results && busqueda.results.length > 0) {
     const qr = busqueda.results[0].qr_code;
@@ -181,12 +191,7 @@ export async function buscarOCrearCaja(
     }
   }
 
-  // TEMPORAL: agregamos el storeId recibido y el body exacto que mandamos a
-  // /pos, para diagnosticar en la UI. Sacar junto con el debug de mpFetch.
-  if (ultimoError instanceof MercadoPagoError) {
-    ultimoError.message += ` | storeId recibido="${storeId}" body=${JSON.stringify(bodyEnviado)}`;
-    throw ultimoError;
-  }
+  if (ultimoError instanceof MercadoPagoError) throw ultimoError;
   throw new MercadoPagoError("No se pudo crear la caja en Mercado Pago.");
 }
 
