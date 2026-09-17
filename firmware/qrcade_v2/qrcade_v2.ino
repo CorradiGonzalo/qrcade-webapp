@@ -381,12 +381,8 @@ void actualizarPantalla() {
   previousState = currentState;
 }
 
-// Decide qué pantalla corresponde según el último check-in conocido. No se
-// llama mientras currentState == SHOW_PAID para no cortar el cartel de
-// "Pago Exitoso" antes de tiempo.
+// Decide qué pantalla corresponde según el último check-in conocido.
 void resolverEstadoSegunBackend() {
-  if (currentState == SHOW_PAID) return;
-
   DisplayState objetivo;
 
   if (deviceStatus == "revoked") {
@@ -399,9 +395,9 @@ void resolverEstadoSegunBackend() {
     } else if (cachedQrData == "") {
       objetivo = SHOW_UNCONFIGURED;
     } else {
-      objetivo = (currentState == SHOW_QR || currentState == SHOW_IDLE)
-                   ? currentState
-                   : SHOW_QR;
+      // Pedido explícito: una vez configurada, siempre el QR fijo — ya no
+      // se cicla a "Escaneá y Jugá" ni se corta con "Pago Exitoso".
+      objetivo = SHOW_QR;
     }
   } else {
     objetivo = SHOW_BOOT;
@@ -531,14 +527,13 @@ void procesarComandos(JsonArray comandos) {
       delay(200);
       ESP.restart();
     } else if (comando == "test_dispense") {
+      // Ya no cambiamos de pantalla acá: el pedido es que la pantalla se
+      // quede siempre en el QR fijo, sin cortar con "Pago Exitoso". El
+      // relé igual se dispara normalmente.
       triggerCoinPulses(1);
-      currentState = SHOW_PAID;
-      displayStateStart = millis();
     } else if (comando.startsWith("dispense:")) {
       int veces = comando.substring(9).toInt();
       triggerCoinPulses(veces > 0 ? veces : 1);
-      currentState = SHOW_PAID;
-      displayStateStart = millis();
     } else {
       logLine("!! Comando desconocido, se ignora: " + comando);
     }
@@ -716,6 +711,17 @@ void setup() {
   dibujarPantallaBoot("Iniciando...");
   previousState = SHOW_UNCLAIMED; // fuerza primer redibujado real más abajo
 
+  // OJO, este es el bug real detrás de "no reconecta sola al WiFi guardado":
+  // en el ESP32, WiFi.macAddress() y WiFi.SSID() sólo devuelven datos reales
+  // una vez que el driver de WiFi arrancó (WiFi.mode(...)). Si los leemos
+  // antes, devuelven vacío/00:00:00:00:00:00 — y como hayCredenciales se
+  // calculaba ANTES de poner el modo STA (que sólo se seteaba más abajo,
+  // en la rama que ya asumía que había credenciales), la placa "veía" que
+  // no había nada guardado y abría el portal en TODOS los arranques, aunque
+  // el WiFi sí estuviera guardado. Por eso hay que poner el modo STA acá
+  // arriba, antes de leer nada.
+  WiFi.mode(WIFI_STA);
+
   logLine("");
   logLine("========================================");
   logLine("QRcade firmware v" + String(FIRMWARE_VERSION));
@@ -736,7 +742,6 @@ void setup() {
     // abrirPortalDeConfiguracion() sólo retorna si conectó con éxito.
   } else {
     dibujarPantallaBoot("Conectando WiFi...");
-    WiFi.mode(WIFI_STA);
     WiFi.begin();
 
     unsigned long tConexion0 = millis();
@@ -796,17 +801,12 @@ void loop() {
       resolverEstadoSegunBackend();
     }
 
-    unsigned long elapsed = millis() - displayStateStart;
-    if (currentState == SHOW_QR && elapsed >= QR_DURATION_MS) {
-      currentState = SHOW_IDLE;
-      displayStateStart = millis();
-    } else if (currentState == SHOW_IDLE && elapsed >= IDLE_DURATION_MS) {
-      currentState = SHOW_QR;
-      displayStateStart = millis();
-    } else if (currentState == SHOW_PAID && elapsed >= PAID_DURATION_MS) {
-      currentState = (cachedQrData != "") ? SHOW_QR : SHOW_IDLE;
-      displayStateStart = millis();
-    }
+    // Pedido explícito: la pantalla NO cicla más entre QR y "Escaneá y
+    // Jugá", y tampoco corta al QR con el cartel de "Pago Exitoso" — una
+    // vez configurada, se queda siempre mostrando el QR fijo. Por eso ya
+    // no hay nada que hacer acá con QR_DURATION_MS/IDLE_DURATION_MS/
+    // PAID_DURATION_MS (quedan declaradas pero sin uso, no hace falta
+    // borrarlas). El estado lo sigue decidiendo resolverEstadoSegunBackend().
   }
 
   actualizarPantalla();
