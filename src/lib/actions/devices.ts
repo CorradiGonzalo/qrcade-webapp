@@ -8,7 +8,7 @@ import type { Device, Profile } from "@/lib/supabase/types";
 import {
   MercadoPagoError,
   abrirMontoQR,
-  bloquearPrecioFijo,
+  crearOrdenMontoFijo,
   buscarOCrearCaja,
   buscarOCrearTienda,
   externalIdBase,
@@ -134,7 +134,7 @@ export async function saveDeviceBillingAction(
     qrData = await buscarOCrearCaja(token, storeId, externalIdCaja, cajaName);
 
     if (mode === "fijo" && monto !== null) {
-      await bloquearPrecioFijo(token, mpUserId, externalIdCaja, cajaName, monto);
+      await crearOrdenMontoFijo(token, externalIdCaja, cajaName, monto);
     } else {
       await abrirMontoQR(token, mpUserId, externalIdCaja);
     }
