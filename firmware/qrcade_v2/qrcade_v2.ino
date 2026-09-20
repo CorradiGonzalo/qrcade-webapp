@@ -97,7 +97,7 @@ static const char *BACKEND_HOST = "qrcade.dev";
 static const uint16_t BACKEND_PORT = 443;
 static const char *CHECKIN_PATH = "/api/device/checkin";
 
-static const char *FIRMWARE_VERSION = "2.0.0";
+static const char *FIRMWARE_VERSION = "2.0.1";
 
 // ============================================================================
 //                          CONFIG DE HARDWARE
@@ -140,6 +140,17 @@ static const bool DEBUG_LOG = true;
 
 // Watchdog: si el loop no "respira" en este tiempo, el chip se reinicia solo.
 static const uint32_t WDT_TIMEOUT_S = 30;
+
+// Timeout de watchdog "ampliado", usado sólo mientras dura
+// wm.startConfigPortal() (ver abrirPortalDeConfiguracion()) — ese llamado
+// hace un WiFi.scanNetworks() sincrónico que de por sí puede tardar más que
+// WDT_TIMEOUT_S normal. Antes sacábamos la tarea del watchdog por completo
+// durante esta llamada (esp_task_wdt_delete), pero eso significaba que si
+// el radio de WiFi quedaba colgado de verdad (visto con hardware real:
+// pantalla negra permanente, ni siquiera levanta la red "QRcade_Config"),
+// no había NADA que recuperara la placa sin desenchufarla a mano. Ahora en
+// cambio alargamos el timeout en vez de sacar la protección del todo.
+static const uint32_t WDT_TIMEOUT_PORTAL_S = 90;
 
 // Si el WiFi está caído más de esto de forma continua, reinicio completo.
 static const unsigned long WIFI_DOWN_RESTART_MS = 5UL * 60UL * 1000UL; // 5 min
@@ -724,6 +735,23 @@ void chequearSaludYReiniciarSiHaceFalta() {
   }
 }
 
+// Reconfigura el timeout del Task Watchdog sin sacar la tarea actual de su
+// vigilancia (a diferencia de esp_task_wdt_delete/_add, que la deja sin
+// ninguna protección mientras tanto). Misma bifurcación 2.x/3.x que en
+// setup().
+void configurarWatchdog(uint32_t timeoutS) {
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+  esp_task_wdt_config_t twdt_config = {
+    .timeout_ms = timeoutS * 1000,
+    .idle_core_mask = 0,
+    .trigger_panic = true,
+  };
+  esp_task_wdt_reconfigure(&twdt_config);
+#else
+  esp_task_wdt_init(timeoutS, true);
+#endif
+}
+
 // ============================================================================
 //                    PORTAL DE CONFIGURACION (bajo demanda, NUNCA automático)
 // ============================================================================
@@ -750,16 +778,40 @@ void abrirPortalDeConfiguracion() {
   // la página del portal, y ese escaneo por sí solo puede tardar más que
   // WDT_TIMEOUT_S (confirmado con hardware real: reinicios en bucle
   // mostrando "Starting Web Portal" y nada más, justo el tiempo del
-  // watchdog). Como esto pasa ANTES de que lleguemos a nuestro loop de abajo,
-  // ahí tampoco hay forma de alimentar el watchdog. Solución: sacamos esta
-  // tarea del watchdog justo antes de la llamada, y la volvemos a agregar
-  // apenas vuelve el control — el loop de abajo se encarga de alimentarlo
-  // de ahí en más.
-  esp_task_wdt_delete(NULL);
+  // watchdog).
+  //
+  // IMPORTANTE (parte 3 — bug real de campo, sept. 2026): cuando esta
+  // función se llama porque el WiFi guardado NO se encontró (router
+  // apagado/desenchufado, no que esté mal la contraseña), el radio viene de
+  // 20s reintentando WiFi.begin() contra una red que no está — y arrancar
+  // el modo AP+STA de wm.startConfigPortal() justo después, con el radio en
+  // ese estado, puede dejar el driver de WiFi del ESP32 colgado para
+  // siempre (confirmado con hardware real: pantalla completamente negra, ni
+  // siquiera llega a levantar la red "QRcade_Config" para conectarse).
+  // Antes además sacábamos esta tarea del watchdog por completo durante la
+  // llamada (esp_task_wdt_delete), así que ni el propio watchdog rescataba
+  // a la placa de ese cuelgue — quedaba tildada hasta desenchufarla a mano.
+  // Dos cambios para esto:
+  //   1) Apagar y volver a prender el radio (WiFi.mode(WIFI_OFF) y de
+  //      nuevo WIFI_STA) ANTES de abrir el portal, para que
+  //      startConfigPortal() arranque siempre de un estado limpio en vez
+  //      de heredar el de un WiFi.begin() fallido.
+  //   2) Ya no sacamos la tarea del watchdog del todo — la dejamos con un
+  //      timeout más largo (WDT_TIMEOUT_PORTAL_S) que sí alcanza para un
+  //      escaneo lento normal, pero que igual reinicia la placa sola si el
+  //      radio se cuelga de verdad, en vez de dejarla negra para siempre.
+  WiFi.disconnect(true, true);
+  delay(100);
+  WiFi.mode(WIFI_OFF);
+  delay(200);
+  WiFi.mode(WIFI_STA);
+  delay(100);
+
+  configurarWatchdog(WDT_TIMEOUT_PORTAL_S);
   wm.setConfigPortalBlocking(false);
   wm.setConfigPortalTimeout(0); // el timeout real lo controlamos abajo
   wm.startConfigPortal("QRcade_Config");
-  esp_task_wdt_add(NULL);
+  configurarWatchdog(WDT_TIMEOUT_S);
 
   const unsigned long TIMEOUT_SIN_CONFIGURAR_MS = 180000; // 3 min
   unsigned long inicioPortal = millis();
