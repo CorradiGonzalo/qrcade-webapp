@@ -10,7 +10,7 @@ export function FirstLoginForm({ displayName }: { displayName: string }) {
   );
 
   return (
-    <div className="w-[460px] rounded-[20px] border border-line-soft bg-surface p-9 shadow-2xl">
+    <div className="w-full max-w-[460px] rounded-[20px] border border-line-soft bg-surface p-6 shadow-2xl sm:p-9">
       <div className="mb-4 flex items-center gap-2.5">
         <div className="flex h-[30px] w-[30px] items-center justify-center rounded-lg bg-brand">
           <div className="h-3 w-3 rounded-sm border-2 border-[#dbe6ff]" />

@@ -1,5 +1,6 @@
 import { requireAdmin } from "@/lib/supabase/auth";
 import { UploadFirmwareForm } from "@/components/admin/UploadFirmwareForm";
+import { CancelUpdateButton } from "@/components/admin/CancelUpdateButton";
 import { Card } from "@/components/Card";
 import { Badge } from "@/components/Badge";
 import type { Device, FirmwareVersion, Profile } from "@/lib/supabase/types";
@@ -71,7 +72,7 @@ export default async function AdminFirmwarePage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-[1fr_1.4fr] gap-6">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_1.4fr]">
         <UploadFirmwareForm />
 
         <div>
@@ -109,7 +110,7 @@ export default async function AdminFirmwarePage() {
 
           {latest && (devices ?? []).length > 0 && (
             <>
-              <div className="mb-2 mt-6 grid grid-cols-[2fr_1.4fr_1fr] px-1 text-[11px] font-bold tracking-wide text-ink-faint">
+              <div className="mb-2 mt-6 hidden grid-cols-[2fr_1.4fr_1fr] px-1 text-[11px] font-bold tracking-wide text-ink-faint sm:grid">
                 <div>MÁQUINA</div>
                 <div>DUEÑO</div>
                 <div>ESTADO DE {latest.version}</div>
@@ -121,7 +122,7 @@ export default async function AdminFirmwarePage() {
                   return (
                     <div
                       key={d.id}
-                      className="grid grid-cols-[2fr_1.4fr_1fr] items-center rounded-[10px] border border-line bg-surface p-4"
+                      className="grid grid-cols-1 gap-1.5 rounded-[10px] border border-line bg-surface p-4 sm:grid-cols-[2fr_1.4fr_1fr] sm:items-center sm:gap-0"
                     >
                       <div className="text-[13px] font-semibold">
                         {d.alias ?? d.mac}
@@ -129,8 +130,14 @@ export default async function AdminFirmwarePage() {
                       <div className="text-xs text-ink-muted">
                         {ownerName(d.owner_id)}
                       </div>
-                      <div>
+                      <div className="flex items-center">
                         <Badge tone={badge.tone}>{badge.label}</Badge>
+                        {(status === "accepted" || status === "downloading") && (
+                          <CancelUpdateButton
+                            deviceId={d.id}
+                            firmwareVersionId={latest.id}
+                          />
+                        )}
                       </div>
                     </div>
                   );

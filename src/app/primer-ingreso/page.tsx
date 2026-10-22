@@ -12,7 +12,7 @@ export default async function PrimerIngresoPage() {
 
   return (
     <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-bg px-4">
-      <div className="absolute inset-0 flex items-center justify-center bg-black/55">
+      <div className="absolute inset-0 flex items-center justify-center bg-black/55 px-4">
         <FirstLoginForm displayName={profile.display_name ?? profile.username} />
       </div>
     </main>

@@ -205,6 +205,31 @@ export async function removeComboAction(comboId: string, deviceId: string) {
   revalidatePath(`/dashboard/maquinas/${deviceId}/cobro`);
 }
 
+/**
+ * Renombra el alias de una placa ya vinculada. Antes esto sólo se podía
+ * cargar una vez, en el momento de vincular con el código de 6 dígitos
+ * (ver claimDeviceAction) — a pedido del dueño, ahora se puede editar
+ * en cualquier momento desde el panel de la máquina.
+ */
+export async function renameDeviceAction(deviceId: string, alias: string) {
+  const { supabase, userId } = await ownedSupabase();
+
+  const clean = alias.trim();
+  if (!clean) throw new Error("El nombre no puede quedar vacío.");
+  if (clean.length > 60) throw new Error("El nombre es demasiado largo.");
+
+  const { error } = await supabase
+    .from("devices")
+    .update({ alias: clean })
+    .eq("id", deviceId)
+    .eq("owner_id", userId);
+
+  if (error) throw new Error("No se pudo guardar el nombre.");
+
+  revalidatePath(`/dashboard/maquinas/${deviceId}`);
+  revalidatePath("/dashboard");
+}
+
 export async function togglePauseAction(deviceId: string, pause: boolean) {
   const { supabase } = await ownedSupabase();
   const { error } = await supabase

@@ -43,3 +43,6 @@ next-env.d.ts
 # cloudflare / opennext
 .open-next
 .wrangler
+
+# builds locales de Arduino (regenerables, pesan ~40MB c/u)
+firmware/*/build/

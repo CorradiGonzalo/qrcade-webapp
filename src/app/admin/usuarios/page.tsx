@@ -20,7 +20,7 @@ export default async function AdminUsuariosPage() {
         su primer ingreso.
       </p>
 
-      <div className="grid grid-cols-[1.1fr_1.4fr] gap-6">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.1fr_1.4fr]">
         <CreateUserForm />
 
         <div className="rounded-2xl border border-line bg-surface p-6">

@@ -43,7 +43,7 @@ export default async function DashboardPage() {
 
   return (
     <div>
-      <div className="mb-6 flex items-end justify-between">
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="mb-1 text-2xl font-bold tracking-tight">
             Mis máquinas
@@ -55,7 +55,7 @@ export default async function DashboardPage() {
         </div>
         <Link
           href="/dashboard/agregar"
-          className="rounded-lg bg-brand px-[18px] py-2.5 text-[13px] font-semibold text-white transition hover:opacity-90"
+          className="rounded-lg bg-brand px-[18px] py-2.5 text-center text-[13px] font-semibold text-white transition hover:opacity-90"
         >
           + Agregar máquina
         </Link>
@@ -90,7 +90,7 @@ export default async function DashboardPage() {
           </Link>
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-5">
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
           {list.map((d) => (
             <DeviceCard key={d.id} device={d} />
           ))}

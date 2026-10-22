@@ -3,8 +3,18 @@ import { notFound } from "next/navigation";
 import QRCode from "qrcode";
 import { requireActiveUser } from "@/lib/supabase/auth";
 import { DeviceActions } from "@/components/dashboard/DeviceActions";
+import { DeviceNameEditor } from "@/components/dashboard/DeviceNameEditor";
 import { FirmwareBanner } from "@/components/dashboard/FirmwareBanner";
+import { SalesPeriodFilter } from "@/components/dashboard/SalesPeriodFilter";
+import { resolverRangoFechas } from "@/lib/sales-period";
 import type { Device, DeviceEvent, FirmwareVersion } from "@/lib/supabase/types";
+
+/** Tope de filas que se traen de mp_payments por período — de sobra para
+ * el volumen de una máquina individual; evita una query sin fin si
+ * alguien elige "Todo" en una placa con años de historial. */
+const MAX_PAGOS = 500;
+/** Cuántas filas se listan en el detalle (los totales sí usan MAX_PAGOS). */
+const MAX_PAGOS_LISTADOS = 50;
 
 const EVENT_LABELS: Record<DeviceEvent["type"], string> = {
   wifi_reconnect: "📶 WiFi",
@@ -18,6 +28,7 @@ export default async function DeviceDetailPage(
   props: PageProps<"/dashboard/maquinas/[id]">
 ) {
   const { id } = await props.params;
+  const sp = await props.searchParams;
   const { user, supabase } = await requireActiveUser();
 
   const { data: device } = await supabase
@@ -48,12 +59,26 @@ export default async function DeviceDetailPage(
 
   const hasQrConfig = Boolean(device.qr_data);
 
-  const { data: pagos } = await supabase
+  const periodoParam = typeof sp.periodo === "string" ? sp.periodo : undefined;
+  const desdeParam = typeof sp.desde === "string" ? sp.desde : undefined;
+  const hastaParam = typeof sp.hasta === "string" ? sp.hasta : undefined;
+  const rango = resolverRangoFechas({
+    periodo: periodoParam,
+    desde: desdeParam,
+    hasta: hastaParam,
+  });
+
+  let pagosQuery = supabase
     .from("mp_payments")
     .select("amount, fichas_dispensed, status, created_at")
     .eq("device_id", device.id)
     .order("created_at", { ascending: false })
-    .limit(20);
+    .limit(MAX_PAGOS);
+
+  if (rango.desde) pagosQuery = pagosQuery.gte("created_at", rango.desde.toISOString());
+  if (rango.hasta) pagosQuery = pagosQuery.lt("created_at", rango.hasta.toISOString());
+
+  const { data: pagos } = await pagosQuery;
 
   const { data: eventos } = await supabase
     .from("device_events")
@@ -65,6 +90,8 @@ export default async function DeviceDetailPage(
   const acreditados = (pagos ?? []).filter((p) => (p.fichas_dispensed ?? 0) > 0);
   const totalFichas = acreditados.reduce((acc, p) => acc + (p.fichas_dispensed ?? 0), 0);
   const totalCobrado = acreditados.reduce((acc, p) => acc + Number(p.amount ?? 0), 0);
+  const totalVentas = acreditados.length;
+  const pagosTope = (pagos ?? []).length >= MAX_PAGOS;
 
   const qrImage = device.qr_data
     ? await QRCode.toDataURL(device.qr_data, { margin: 1, width: 180 })
@@ -72,7 +99,7 @@ export default async function DeviceDetailPage(
 
   return (
     <div>
-      <div className="mb-7 flex items-start justify-between">
+      <div className="mb-7 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <Link
             href="/dashboard"
@@ -80,14 +107,12 @@ export default async function DeviceDetailPage(
           >
             ← Mis máquinas
           </Link>
-          <h1 className="text-2xl font-bold tracking-tight">
-            {device.alias ?? device.mac}
-          </h1>
+          <DeviceNameEditor deviceId={device.id} alias={device.alias} mac={device.mac} />
           <div className="mt-1.5 font-mono text-xs text-ink-faint">
             {device.mac}
           </div>
         </div>
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2.5">
           <Link
             href={`/dashboard/maquinas/${device.id}/cobro`}
             className="rounded-[9px] border border-line-soft bg-surface-2 px-4 py-2.5 text-[13px] font-semibold text-ink"
@@ -108,9 +133,9 @@ export default async function DeviceDetailPage(
         />
       )}
 
-      <div className="grid grid-cols-[1.3fr_1fr] gap-6">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.3fr_1fr]">
         <div>
-          <div className="mb-5 grid grid-cols-3 gap-3.5">
+          <div className="mb-5 grid grid-cols-3 gap-2 sm:gap-3.5">
             <div className="rounded-xl border border-line bg-surface p-4">
               <div className="mb-2 text-[11px] font-bold text-ink-faint">
                 ESTADO
@@ -142,20 +167,23 @@ export default async function DeviceDetailPage(
           </div>
 
           <div className="rounded-2xl border border-line bg-surface p-[22px]">
-            <div className="mb-3 text-sm font-bold">Ventas</div>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-bold">Ventas</div>
+              <div className="text-[11px] text-ink-faint">{rango.label}</div>
+            </div>
+
+            <SalesPeriodFilter periodoActivo={rango.periodo} />
+
             {acreditados.length === 0 ? (
               <p className="text-xs text-ink-muted">
-                Todavía no se registró ningún pago acreditado en esta
-                máquina. En cuanto Mercado Pago confirme un cobro (vía
-                webhook) va a aparecer acá.
+                No hay pagos acreditados en este período. En cuanto Mercado
+                Pago confirme un cobro (vía webhook) va a aparecer acá.
               </p>
             ) : (
               <>
-                <div className="mb-4 flex gap-6">
+                <div className="mb-4 flex flex-wrap gap-6">
                   <div>
-                    <div className="text-[11px] text-ink-faint">
-                      Últimos 20 pagos
-                    </div>
+                    <div className="text-[11px] text-ink-faint">Recaudado</div>
                     <div className="text-lg font-bold">${totalCobrado}</div>
                   </div>
                   <div>
@@ -164,12 +192,16 @@ export default async function DeviceDetailPage(
                     </div>
                     <div className="text-lg font-bold">{totalFichas}</div>
                   </div>
+                  <div>
+                    <div className="text-[11px] text-ink-faint">Ventas</div>
+                    <div className="text-lg font-bold">{totalVentas}</div>
+                  </div>
                 </div>
                 <div className="space-y-1.5">
-                  {(pagos ?? []).slice(0, 6).map((p, i) => (
+                  {(pagos ?? []).slice(0, MAX_PAGOS_LISTADOS).map((p, i) => (
                     <div
                       key={i}
-                      className="flex justify-between text-xs text-ink-muted"
+                      className="flex flex-col gap-0.5 text-xs text-ink-muted sm:flex-row sm:justify-between sm:gap-3"
                     >
                       <span>
                         {new Date(p.created_at).toLocaleString("es-AR")}
@@ -187,6 +219,15 @@ export default async function DeviceDetailPage(
                     </div>
                   ))}
                 </div>
+                {(pagos ?? []).length > MAX_PAGOS_LISTADOS && (
+                  <p className="mt-2.5 text-[11px] text-ink-faint">
+                    Mostrando los últimos {MAX_PAGOS_LISTADOS} de{" "}
+                    {(pagos ?? []).length}
+                    {pagosTope ? "+" : ""} pagos de este período — los
+                    totales de arriba sí los incluyen a todos
+                    {pagosTope ? ` (hasta ${MAX_PAGOS})` : ""}.
+                  </p>
+                )}
               </>
             )}
           </div>
@@ -204,12 +245,12 @@ export default async function DeviceDetailPage(
                 {eventos.map((e, i) => (
                   <div
                     key={i}
-                    className="flex items-start justify-between gap-3 text-xs text-ink-muted"
+                    className="flex flex-col gap-0.5 text-xs text-ink-muted sm:flex-row sm:items-start sm:justify-between sm:gap-3"
                   >
                     <span className="shrink-0 text-ink-faint">
                       {new Date(e.created_at).toLocaleString("es-AR")}
                     </span>
-                    <span className="text-right text-ink">
+                    <span className="text-ink sm:text-right">
                       {EVENT_LABELS[e.type as DeviceEvent["type"]] ?? e.type}{" "}
                       — {e.message}
                     </span>

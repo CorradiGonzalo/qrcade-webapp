@@ -45,45 +45,61 @@ export async function POST(request: Request) {
   const mac = String(body.mac).toUpperCase();
   const admin = createAdminClient();
 
-  const { data: setting } = await admin
-    .from("app_settings")
-    .select("value")
-    .eq("key", "factory_key_hash")
-    .single();
-
-  const providedHash = createHash("sha256")
-    .update(String(body.factory_key))
-    .digest("hex");
-
-  const isValidKey = setting?.value && setting.value === providedHash;
-
-  const { data: existing } = await admin
-    .from("devices")
-    .select("*")
-    .eq("mac", mac)
-    .maybeSingle();
-
-  if (!existing && !isValidKey) {
-    await admin.from("device_registration_attempts").insert({
-      mac,
-      accepted: false,
-      reason: "factory_key inválida",
-    });
-    return NextResponse.json(
-      { error: "No autorizada." },
-      { status: 403 }
-    );
-  }
-
   const nowFields = {
     last_seen_at: new Date().toISOString(),
     firmware_version: body.firmware_version ?? null,
     wifi_rssi: typeof body.wifi_rssi === "number" ? body.wifi_rssi : null,
   };
 
-  let device = existing;
+  // Camino rápido (99%+ de los check-ins: la placa ya está dada de alta).
+  // Un solo viaje a Supabase en vez de los 2 de antes (select + update) —
+  // ver migración 0007_checkin_touch_rpc.sql. La factory_key NO se valida
+  // acá: nunca hizo falta para una placa ya existente, sólo protege el
+  // alta de una nueva más abajo.
+  const { data: touchResult, error: touchError } = await admin.rpc(
+    "touch_device_checkin",
+    {
+      p_mac: mac,
+      p_firmware_version: nowFields.firmware_version,
+      p_wifi_rssi: nowFields.wifi_rssi,
+    }
+  );
+
+  if (touchError) {
+    return NextResponse.json({ error: touchError.message }, { status: 500 });
+  }
+
+  const touchRow = Array.isArray(touchResult) ? touchResult[0] : touchResult;
+
+  let device = touchRow?.device ?? null;
 
   if (!device) {
+    // Placa nueva: no estaba en la tabla, así que acá sí hace falta
+    // validar la clave de fábrica antes de darla de alta.
+    const { data: setting } = await admin
+      .from("app_settings")
+      .select("value")
+      .eq("key", "factory_key_hash")
+      .single();
+
+    const providedHash = createHash("sha256")
+      .update(String(body.factory_key))
+      .digest("hex");
+
+    const isValidKey = setting?.value && setting.value === providedHash;
+
+    if (!isValidKey) {
+      await admin.from("device_registration_attempts").insert({
+        mac,
+        accepted: false,
+        reason: "factory_key inválida",
+      });
+      return NextResponse.json(
+        { error: "No autorizada." },
+        { status: 403 }
+      );
+    }
+
     const claimCode = generateClaimCode();
     const { data: created, error } = await admin
       .from("devices")
@@ -103,21 +119,10 @@ export async function POST(request: Request) {
 
     device = created;
   } else {
-    const gapMs = existing.last_seen_at
-      ? Date.now() - new Date(existing.last_seen_at).getTime()
+    const previousLastSeenAt = touchRow.previous_last_seen_at;
+    const gapMs = previousLastSeenAt
+      ? Date.now() - new Date(previousLastSeenAt).getTime()
       : null;
-
-    const { data: updated, error } = await admin
-      .from("devices")
-      .update(nowFields)
-      .eq("id", existing.id)
-      .select("*")
-      .single();
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
-    device = updated;
 
     if (gapMs !== null && gapMs >= RECONNECT_GAP_MS && device.status === "claimed") {
       const segundos = Math.round(gapMs / 1000);
@@ -166,14 +171,32 @@ export async function POST(request: Request) {
 
   const firmwareUpdate = await resolverFirmwareUpdate(admin, device, nowFields.firmware_version);
 
+  // En modo "combo" (monto abierto), la ESP necesita saber qué opciones
+  // mostrar junto al QR — si no, el cliente escanea y no tiene forma de
+  // saber qué monto pagar para qué cantidad de fichas. Ordenado por monto
+  // ascendente para que se dibuje siempre en el mismo orden en pantalla.
+  let combos: { monto: number; fichas: number }[] | null = null;
+  if (device.mode === "combo") {
+    const { data: comboRows } = await admin
+      .from("device_ficha_combos")
+      .select("monto, fichas")
+      .eq("device_id", device.id)
+      .order("monto", { ascending: true });
+    combos = comboRows ?? [];
+  }
+
   return NextResponse.json({
     status: "claimed",
     is_paused: device.is_paused,
+    mode: device.mode,
     // Payload del QR dinámico de MP, cacheado la última vez que el dueño
     // guardó su configuración de cobro (ver saveDeviceBillingAction). Si
     // todavía no configuró nada, viene null y la ESP muestra "cobro sin
     // configurar".
     qr_data: device.qr_data,
+    // Sólo presente en modo "combo" — lista de opciones monto->fichas
+    // para que la ESP las dibuje junto al QR (ver dibujarQRConCombos).
+    ...(combos ? { combos } : {}),
     commands: (pendingCommands ?? []).map((c) => c.command),
     // Sólo presente cuando hay una versión aceptada por el dueño para
     // instalar (o cuyo intento anterior de descarga se dio por perdido).
@@ -197,6 +220,13 @@ export async function POST(request: Request) {
  *    'downloading' (o sea: ya se flasheó y reinició sola), la marcamos
  *    'updated' y lo logueamos en device_events.
  */
+/** Normaliza un string de versión de firmware para comparar sin que
+ * importen mayúsculas, espacios de más, o un prefijo "v" opcional
+ * ("v2.0.1" vs "2.0.1" vs " V2.0.1 " son todas la misma versión). */
+function normalizarVersion(v: string): string {
+  return v.trim().toLowerCase().replace(/^v/, "");
+}
+
 async function resolverFirmwareUpdate(
   admin: ReturnType<typeof createAdminClient>,
   device: { id: string },
@@ -221,10 +251,20 @@ async function resolverFirmwareUpdate(
 
   // La placa ya reportó la versión que estábamos esperando -> ya se
   // actualizó sola y reinició. Cerramos el ciclo.
+  //
+  // OJO (bug real, sept. 2026): esto comparaba el string CRUDO tal cual
+  // lo tipeó el admin al publicar ("v2.0.1", con "v") contra el que la
+  // ESP se auto-reporta desde la constante FIRMWARE_VERSION del .ino
+  // ("2.0.1", sin "v") — nunca iban a coincidir. La placa se actualizaba
+  // perfecto y quedaba resinstalándose sola cada OTA_RETRY_MS para
+  // siempre porque el backend nunca se enteraba de que ya había
+  // terminado. Normalizamos los dos lados (sin espacios, sin "v" inicial,
+  // case-insensitive) antes de comparar para que esto no dependa de que
+  // el admin tipee la versión exactamente igual a como está en el .ino.
   if (
     pendiente.status === "downloading" &&
     reportedFirmwareVersion &&
-    reportedFirmwareVersion === fv.version
+    normalizarVersion(reportedFirmwareVersion) === normalizarVersion(fv.version)
   ) {
     await admin
       .from("device_firmware_status")

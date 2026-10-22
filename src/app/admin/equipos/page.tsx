@@ -46,20 +46,20 @@ export default async function AdminEquiposPage() {
         </p>
       </div>
 
-      <div className="my-6 flex gap-3.5">
-        <Card className="px-[18px] py-3.5">
+      <div className="my-6 grid grid-cols-3 gap-2 sm:gap-3.5">
+        <Card className="px-3 py-3 sm:px-[18px] sm:py-3.5">
           <div className="text-[11px] font-bold text-ink-faint">
             AUTORIZADAS
           </div>
           <div className="mt-1 text-xl font-bold">{counts.claimed + counts.unclaimed}</div>
         </Card>
-        <Card className="px-[18px] py-3.5">
+        <Card className="px-3 py-3 sm:px-[18px] sm:py-3.5">
           <div className="text-[11px] font-bold text-ink-faint">
             SIN RECLAMAR
           </div>
           <div className="mt-1 text-xl font-bold text-warn">{counts.unclaimed}</div>
         </Card>
-        <Card className="px-[18px] py-3.5">
+        <Card className="px-3 py-3 sm:px-[18px] sm:py-3.5">
           <div className="text-[11px] font-bold text-ink-faint">
             REVOCADAS
           </div>
@@ -67,23 +67,25 @@ export default async function AdminEquiposPage() {
         </Card>
       </div>
 
-      <div className="grid grid-cols-[2.2fr_1.6fr_1.2fr_0.5fr_1.4fr] border-b border-line px-4 pb-2.5 text-[11px] font-bold tracking-wide text-ink-faint">
-        <div>CÓDIGO ID</div>
-        <div>DUEÑO</div>
-        <div>ALTA</div>
-        <div className="text-center">●</div>
-        <div />
-      </div>
+      <div>
+        <div className="hidden grid-cols-[2.2fr_1.6fr_1.2fr_0.5fr_1.4fr] border-b border-line px-4 pb-2.5 text-[11px] font-bold tracking-wide text-ink-faint sm:grid">
+          <div>CÓDIGO ID</div>
+          <div>DUEÑO</div>
+          <div>ALTA</div>
+          <div className="text-center">●</div>
+          <div />
+        </div>
 
-      <div className="mt-2 space-y-2.5">
-        {list.length === 0 && (
-          <p className="py-10 text-center text-sm text-ink-faint">
-            Todavía no hay ninguna placa que haya hecho check-in.
-          </p>
-        )}
-        {list.map((d) => (
-          <DeviceStatusRow key={d.id} device={d} ownerName={ownerName(d.owner_id)} />
-        ))}
+        <div className="mt-2 space-y-2.5">
+          {list.length === 0 && (
+            <p className="py-10 text-center text-sm text-ink-faint">
+              Todavía no hay ninguna placa que haya hecho check-in.
+            </p>
+          )}
+          {list.map((d) => (
+            <DeviceStatusRow key={d.id} device={d} ownerName={ownerName(d.owner_id)} />
+          ))}
+        </div>
       </div>
     </div>
   );

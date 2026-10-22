@@ -3,8 +3,8 @@ import { ClaimDeviceForm } from "@/components/dashboard/ClaimDeviceForm";
 
 export default function AgregarMaquinaPage() {
   return (
-    <div className="flex min-h-[80vh] items-center justify-center">
-      <div className="w-[480px]">
+    <div className="flex min-h-[80vh] items-center justify-center px-4">
+      <div className="w-full max-w-[480px]">
         <Link
           href="/dashboard"
           className="mb-4 inline-block text-xs text-ink-muted hover:text-ink"

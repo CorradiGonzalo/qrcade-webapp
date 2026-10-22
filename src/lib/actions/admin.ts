@@ -153,6 +153,32 @@ export async function regenerateDeviceCodeAction(deviceId: string) {
   revalidatePath("/admin/equipos");
 }
 
+/**
+ * Cancela una actualización de firmware que quedó pegada en 'accepted' o
+ * 'downloading' — pasa a 'dismissed' para que el checkin dejar de
+ * remandarla cada OTA_RETRY_MS. Hace falta cuando el string de versión
+ * publicado no coincide EXACTO con lo que la placa se auto-reporta (ver
+ * normalizarVersion() en /api/device/checkin): la placa ya se actualizó
+ * bien, pero el backend nunca se entera y la resinstala sola para
+ * siempre. Esto no toca la placa physicamente — sólo le dice al backend
+ * "dejá de insistir con esto".
+ */
+export async function cancelarActualizacionPendienteAction(
+  deviceId: string,
+  firmwareVersionId: string
+) {
+  await requireAdminSession();
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("device_firmware_status")
+    .update({ status: "dismissed", updated_at: new Date().toISOString() })
+    .eq("device_id", deviceId)
+    .eq("firmware_version_id", firmwareVersionId)
+    .in("status", ["accepted", "downloading"]);
+  if (error) throw new Error(error.message);
+  revalidatePath("/admin/firmware");
+}
+
 export type UploadFirmwareState = { error?: string; ok?: boolean } | undefined;
 
 export async function uploadFirmwareAction(

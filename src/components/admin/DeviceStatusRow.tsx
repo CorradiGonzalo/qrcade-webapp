@@ -50,7 +50,7 @@ export function DeviceStatusRow({
 
   return (
     <div
-      className={`grid grid-cols-[2.2fr_1.6fr_1.2fr_0.5fr_1.4fr] items-center rounded-[10px] border p-4 ${
+      className={`grid grid-cols-1 items-start gap-2 rounded-[10px] border p-4 sm:grid-cols-[2.2fr_1.6fr_1.2fr_0.5fr_1.4fr] sm:items-center sm:gap-0 ${
         device.status === "revoked" ? "border-[#6b2323]" : "border-line"
       }`}
     >
@@ -75,10 +75,10 @@ export function DeviceStatusRow({
       <div className="text-xs text-ink-faint">
         {new Date(device.created_at).toLocaleDateString("es-AR")}
       </div>
-      <div className="flex justify-center">
+      <div className="flex justify-start sm:justify-center">
         <StatusDot tone={meta.tone} label={meta.label} />
       </div>
-      <div className="flex justify-end gap-3 text-right">
+      <div className="flex justify-start gap-3 text-left sm:justify-end sm:text-right">
         {device.status !== "revoked" && (
           <button
             disabled={pending}

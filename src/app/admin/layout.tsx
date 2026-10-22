@@ -9,9 +9,11 @@ export default async function AdminLayout({
   const { profile } = await requireAdmin();
 
   return (
-    <div className="flex min-h-screen bg-bg">
+    <div className="flex min-h-screen flex-col bg-bg md:flex-row">
       <AdminSidebar displayName={profile.display_name ?? profile.username} />
-      <div className="flex-1 overflow-hidden px-10 py-8">{children}</div>
+      <div className="min-w-0 flex-1 overflow-x-hidden px-4 py-5 sm:px-6 md:px-10 md:py-8">
+        {children}
+      </div>
     </div>
   );
 }
