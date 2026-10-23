@@ -179,6 +179,15 @@ export async function POST(request: Request) {
   const combos: { monto: number; fichas: number }[] | null =
     touchRow?.combos ?? null;
 
+  // Sólo para kind='cafetera': config operativa (pulso/delay/limpieza/
+  // calentador) + Access Token y collector_id de la cuenta de MP del
+  // dueño (reusados de profiles, no hace falta cargarlos de nuevo por
+  // placa). La ESP lo cachea en su NVS — ver cargarConfiguracionRemota()
+  // en el firmware. No se envía token "solo una vez": va en cada
+  // check-in, así un cambio hecho en el panel (ej. rotar el token, bajar
+  // el delay) se aplica solo en el próximo check-in sin tocar la placa.
+  const cafeConfig = touchRow?.cafe_config ?? null;
+
   return NextResponse.json({
     status: "claimed",
     is_paused: device.is_paused,
@@ -197,6 +206,7 @@ export async function POST(request: Request) {
     // La ESP la descarga con HTTPUpdate y se reinicia sola si sale bien —
     // ver ejecutarActualizacionFirmware() en el .ino.
     ...(firmwareUpdate ? { firmware_update: firmwareUpdate } : {}),
+    ...(cafeConfig ? { cafe_config: cafeConfig } : {}),
   });
 }
 

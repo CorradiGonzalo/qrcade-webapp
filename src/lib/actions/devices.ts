@@ -168,6 +168,93 @@ export async function saveDeviceBillingAction(
 }
 
 // =====================================================================
+//           CONFIG OPERATIVA DE CAFETERA (kind='cafetera')
+// =====================================================================
+export type SaveCafeteraConfigState = { error?: string; ok?: boolean } | undefined;
+
+/**
+ * Guarda la config operativa de una cafetera (pulso/delay/limpieza/
+ * calentador/comando de reset BT — ver migración 0011). El Access Token
+ * y collector_id de MP NO se tocan acá: se leen de profiles al momento
+ * del check-in (ver touch_device_checkin), se cargan una sola vez en
+ * "Mi cuenta" y valen para todas las máquinas del dueño.
+ */
+export async function saveCafeteraConfigAction(
+  _prevState: SaveCafeteraConfigState,
+  formData: FormData
+): Promise<SaveCafeteraConfigState> {
+  const { supabase, userId } = await ownedSupabase();
+
+  const deviceId = String(formData.get("device_id") || "");
+  if (!deviceId) return { error: "Falta la máquina." };
+
+  const num = (campo: string, min: number, max: number, etiqueta: string) => {
+    const raw = String(formData.get(campo) || "").trim();
+    const val = Number(raw);
+    if (!raw || Number.isNaN(val) || val < min || val > max) {
+      throw new Error(`${etiqueta} tiene que ser un número entre ${min} y ${max}.`);
+    }
+    return Math.round(val);
+  };
+
+  let pulsoMinUs: number,
+    offDelayMs: number,
+    cleanPulseMs: number,
+    heatOnMin: number,
+    heatOffMin: number,
+    cleanEveryNCycles: number;
+
+  try {
+    pulsoMinUs = num("cafe_pulso_min_us", 1000, 2_000_000, "El pulso mínimo");
+    offDelayMs = num("cafe_off_delay_ms", 0, 60_000, "El retardo de apagado");
+    cleanPulseMs = num("cafe_clean_pulse_ms", 100, 60_000, "El pulso de limpieza");
+    heatOnMin = num("cafe_heat_on_min", 1, 240, "El tiempo de calentador activo");
+    heatOffMin = num("cafe_heat_off_min", 1, 240, "El tiempo de calentador apagado");
+    cleanEveryNCycles = num("cafe_clean_every_n_cycles", 1, 10_000, "La cantidad de ciclos entre limpiezas");
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Datos inválidos." };
+  }
+
+  const btResetCmd = String(formData.get("cafe_bt_reset_cmd") || "").trim();
+  if (!btResetCmd || btResetCmd.length > 40) {
+    return { error: "El comando de reset BT tiene que tener entre 1 y 40 caracteres." };
+  }
+
+  const pulsoNivelHigh = formData.get("cafe_pulso_nivel_high") === "on";
+
+  const { data: device } = await supabase
+    .from("devices")
+    .select("id, kind")
+    .eq("id", deviceId)
+    .eq("owner_id", userId)
+    .single<Pick<Device, "id" | "kind">>();
+
+  if (!device) return { error: "No se encontró la máquina." };
+  if (device.kind !== "cafetera") {
+    return { error: "Esta máquina no es una cafetera." };
+  }
+
+  const { error } = await supabase
+    .from("devices")
+    .update({
+      cafe_pulso_min_us: pulsoMinUs,
+      cafe_off_delay_ms: offDelayMs,
+      cafe_clean_pulse_ms: cleanPulseMs,
+      cafe_heat_on_min: heatOnMin,
+      cafe_heat_off_min: heatOffMin,
+      cafe_clean_every_n_cycles: cleanEveryNCycles,
+      cafe_bt_reset_cmd: btResetCmd,
+      cafe_pulso_nivel_high: pulsoNivelHigh,
+    })
+    .eq("id", deviceId);
+
+  if (error) return { error: "No se pudo guardar. Probá de nuevo." };
+
+  revalidatePath(`/dashboard/maquinas/${deviceId}`);
+  return { ok: true };
+}
+
+// =====================================================================
 //                    COMBOS DE FICHAS (modo "combo")
 // =====================================================================
 export async function addComboAction(deviceId: string, fichas: number, monto: number) {
@@ -281,6 +368,45 @@ export async function requestTestDispenseAction(deviceId: string) {
     deviceId,
     "dispense_test",
     "Tirando ficha (prueba manual desde el panel)."
+  );
+
+  revalidatePath(`/dashboard/maquinas/${deviceId}`);
+}
+
+/**
+ * Sólo para cafeteras: dispara el ciclo de limpieza (2 pulsos de GPIO25
+ * separados por 20s, exactamente la misma función que ya usa el
+ * firmware cuando se alcanza cafe_clean_every_n_cycles solo) a demanda,
+ * sin esperar a que se cumplan los ciclos. Reusa device_commands, igual
+ * que test/restart.
+ */
+export async function requestCleanCycleAction(deviceId: string) {
+  const { supabase, userId } = await ownedSupabase();
+
+  const { data: device } = await supabase
+    .from("devices")
+    .select("id, kind")
+    .eq("id", deviceId)
+    .eq("owner_id", userId)
+    .single<Pick<Device, "id" | "kind">>();
+
+  if (!device) throw new Error("No se encontró la máquina.");
+  if (device.kind !== "cafetera") {
+    throw new Error("La limpieza manual sólo existe para cafeteras.");
+  }
+
+  const { error } = await supabase.from("device_commands").insert({
+    device_id: deviceId,
+    command: "clean_cycle",
+    created_by: userId,
+  });
+  if (error) throw new Error(error.message);
+
+  await logDeviceEvent(
+    createAdminClient(),
+    deviceId,
+    "clean_cycle",
+    "Limpieza disparada a mano desde el panel."
   );
 
   revalidatePath(`/dashboard/maquinas/${deviceId}`);

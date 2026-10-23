@@ -47,6 +47,17 @@ export interface Device {
   provisioned_at: string | null;
   kind: DeviceKind;
   folder_id: string | null;
+  // Config propia de kind='cafetera' — ver migración 0011. En una
+  // 'garra' quedan en sus valores default, sin uso.
+  cafe_mp_external_reference: string | null;
+  cafe_pulso_min_us: number;
+  cafe_off_delay_ms: number;
+  cafe_clean_pulse_ms: number;
+  cafe_heat_on_min: number;
+  cafe_heat_off_min: number;
+  cafe_clean_every_n_cycles: number;
+  cafe_bt_reset_cmd: string;
+  cafe_pulso_nivel_high: boolean;
   created_at: string;
   claimed_at: string | null;
   revoked_at: string | null;
@@ -90,7 +101,8 @@ export type DeviceEventType =
   | "dispense_test"
   | "dispense_payment"
   | "restart_requested"
-  | "firmware_update";
+  | "firmware_update"
+  | "clean_cycle";
 
 export interface DeviceEvent {
   id: string;

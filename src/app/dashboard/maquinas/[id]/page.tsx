@@ -2,12 +2,18 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import QRCode from "qrcode";
 import { requireActiveUser } from "@/lib/supabase/auth";
+import { CafeteraConfigForm } from "@/components/dashboard/CafeteraConfigForm";
 import { DeviceActions } from "@/components/dashboard/DeviceActions";
 import { DeviceNameEditor } from "@/components/dashboard/DeviceNameEditor";
 import { FirmwareBanner } from "@/components/dashboard/FirmwareBanner";
 import { SalesPeriodFilter } from "@/components/dashboard/SalesPeriodFilter";
 import { resolverRangoFechas } from "@/lib/sales-period";
-import type { Device, DeviceEvent, FirmwareVersion } from "@/lib/supabase/types";
+import type {
+  Device,
+  DeviceEvent,
+  FirmwareVersion,
+  Profile,
+} from "@/lib/supabase/types";
 
 /** Tope de filas que se traen de mp_payments por período — de sobra para
  * el volumen de una máquina individual; evita una query sin fin si
@@ -22,6 +28,7 @@ const EVENT_LABELS: Record<DeviceEvent["type"], string> = {
   dispense_payment: "💸 Pago",
   restart_requested: "⟲ Reinicio",
   firmware_update: "🆕 Firmware",
+  clean_cycle: "🧽 Limpieza",
 };
 
 export default async function DeviceDetailPage(
@@ -58,6 +65,17 @@ export default async function DeviceDetailPage(
   }
 
   const hasQrConfig = Boolean(device.qr_data);
+  const esCafetera = device.kind === "cafetera";
+
+  let hasAccountToken = false;
+  if (esCafetera) {
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("mp_access_token")
+      .eq("id", user.id)
+      .single<Pick<Profile, "mp_access_token">>();
+    hasAccountToken = Boolean(profile?.mp_access_token);
+  }
 
   const periodoParam = typeof sp.periodo === "string" ? sp.periodo : undefined;
   const desdeParam = typeof sp.desde === "string" ? sp.desde : undefined;
@@ -113,12 +131,14 @@ export default async function DeviceDetailPage(
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
-          <Link
-            href={`/dashboard/maquinas/${device.id}/cobro`}
-            className="rounded-[9px] border border-line-soft bg-surface-2 px-4 py-2.5 text-[13px] font-semibold text-ink"
-          >
-            ⚙ Configurar cobro
-          </Link>
+          {!esCafetera && (
+            <Link
+              href={`/dashboard/maquinas/${device.id}/cobro`}
+              className="rounded-[9px] border border-line-soft bg-surface-2 px-4 py-2.5 text-[13px] font-semibold text-ink"
+            >
+              ⚙ Configurar cobro
+            </Link>
+          )}
           <DeviceActions device={device} />
         </div>
       </div>
@@ -166,6 +186,7 @@ export default async function DeviceDetailPage(
             </div>
           </div>
 
+          {!esCafetera && (
           <div className="rounded-2xl border border-line bg-surface p-[22px]">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div className="text-sm font-bold">Ventas</div>
@@ -231,6 +252,7 @@ export default async function DeviceDetailPage(
               </>
             )}
           </div>
+          )}
 
           <div className="mt-4 rounded-2xl border border-line bg-surface p-[22px]">
             <div className="mb-3 text-sm font-bold">Actividad</div>
@@ -262,6 +284,9 @@ export default async function DeviceDetailPage(
         </div>
 
         <div>
+          {esCafetera ? (
+            <CafeteraConfigForm device={device} hasAccountToken={hasAccountToken} />
+          ) : (
           <div className="rounded-2xl border border-line bg-surface p-6 text-center">
             <div className="mb-4 text-left text-sm font-bold">
               Código QR activo
@@ -306,6 +331,7 @@ export default async function DeviceDetailPage(
               </div>
             )}
           </div>
+          )}
 
           <div className="mt-4 rounded-2xl border border-line bg-surface p-5">
             <div className="mb-3 text-sm font-bold">Info del equipo</div>
