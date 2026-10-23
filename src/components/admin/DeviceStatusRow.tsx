@@ -55,7 +55,12 @@ export function DeviceStatusRow({
       }`}
     >
       <div>
-        <div className="font-mono text-[13px] font-semibold">{device.mac}</div>
+        <div className="flex items-center gap-1.5">
+          <span className="font-mono text-[13px] font-semibold">{device.mac}</span>
+          <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-bold text-ink-faint">
+            {device.kind === "cafetera" ? "☕" : "🕹"}
+          </span>
+        </div>
         {device.status === "unclaimed" && device.claim_code && (
           <button
             onClick={copyCode}

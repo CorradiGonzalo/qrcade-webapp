@@ -4,6 +4,8 @@ export type DeviceStatus = "unclaimed" | "claimed" | "revoked";
 
 export type DeviceMode = "fijo" | "combo";
 
+export type DeviceKind = "garra" | "cafetera";
+
 export type FirmwareStatus =
   | "notified"
   | "accepted"
@@ -43,9 +45,19 @@ export interface Device {
   pos_id: string | null;
   qr_data: string | null;
   provisioned_at: string | null;
+  kind: DeviceKind;
+  folder_id: string | null;
   created_at: string;
   claimed_at: string | null;
   revoked_at: string | null;
+}
+
+export interface DeviceFolder {
+  id: string;
+  owner_id: string;
+  parent_id: string | null;
+  name: string;
+  created_at: string;
 }
 
 export interface DeviceFichaCombo {
@@ -61,6 +73,7 @@ export interface FirmwareVersion {
   version: string;
   bin_url: string;
   changelog: string | null;
+  kind: DeviceKind;
   created_by: string | null;
   created_at: string;
 }

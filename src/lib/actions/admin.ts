@@ -190,6 +190,7 @@ export async function uploadFirmwareAction(
   const version = String(formData.get("version") || "").trim();
   const binUrl = String(formData.get("bin_url") || "").trim();
   const changelog = String(formData.get("changelog") || "").trim();
+  const kind = formData.get("kind") === "cafetera" ? "cafetera" : "garra";
 
   if (!version || !binUrl) {
     return { error: "Faltan la versión o el archivo .bin." };
@@ -203,6 +204,7 @@ export async function uploadFirmwareAction(
       version,
       bin_url: binUrl,
       changelog: changelog || null,
+      kind,
       created_by: user.id,
     })
     .select("id")
@@ -217,12 +219,15 @@ export async function uploadFirmwareAction(
     };
   }
 
-  // Notificamos a todas las máquinas reclamadas — cada dueño decide si
-  // instala o no desde su panel.
+  // Notificamos SOLO a las máquinas reclamadas del MISMO kind que esta
+  // versión — nunca a las del otro tipo. Esta es la barrera real contra
+  // mandarle un firmware de garra a una cafetera (o viceversa): ni
+  // siquiera se le llega a ofrecer en su panel.
   const { data: devices } = await admin
     .from("devices")
     .select("id")
-    .eq("status", "claimed");
+    .eq("status", "claimed")
+    .eq("kind", kind);
 
   if (devices?.length) {
     await admin.from("device_firmware_status").insert(

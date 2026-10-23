@@ -12,6 +12,7 @@ export function UploadFirmwareForm() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [binUrl, setBinUrl] = useState<string | null>(null);
+  const [kind, setKind] = useState<"garra" | "cafetera">("garra");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -49,6 +50,33 @@ export function UploadFirmwareForm() {
       </p>
 
       <form action={formAction} className="space-y-3">
+        <div>
+          <label className="mb-1.5 block text-xs font-semibold text-ink-muted">
+            Tipo de placa
+          </label>
+          <div className="flex gap-2">
+            {(["garra", "cafetera"] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setKind(k)}
+                className={`flex-1 rounded-lg border px-3.5 py-2.5 text-sm font-semibold transition ${
+                  kind === k
+                    ? "border-brand bg-brand-soft text-ink"
+                    : "border-line-soft bg-surface-2 text-ink-muted hover:text-ink"
+                }`}
+              >
+                {k === "garra" ? "🕹 Garra" : "☕ Cafetera"}
+              </button>
+            ))}
+          </div>
+          <input type="hidden" name="kind" value={kind} />
+          <p className="mt-1.5 text-[11px] text-ink-faint">
+            Esta versión sólo se va a ofrecer a placas de este tipo — nunca se
+            cruza con el otro.
+          </p>
+        </div>
+
         <div>
           <label className="mb-1.5 block text-xs font-semibold text-ink-muted">
             Versión
@@ -101,7 +129,8 @@ export function UploadFirmwareForm() {
         )}
         {state?.ok && (
           <p className="text-xs font-medium text-ok">
-            Versión publicada — se notificó a todas las máquinas reclamadas.
+            Versión publicada — se notificó a las máquinas de tipo &quot;
+            {kind}&quot; reclamadas.
           </p>
         )}
 

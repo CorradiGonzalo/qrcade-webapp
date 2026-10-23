@@ -22,7 +22,14 @@ const OTA_RETRY_MS = 10 * 60 * 1000; // 10 min
  * autentica con la "clave de fábrica" embebida en el firmware que
  * compila el admin. Body esperado:
  *
- *   { mac, factory_key, firmware_version?, wifi_rssi? }
+ *   { mac, factory_key, firmware_version?, wifi_rssi?, kind? }
+ *
+ * `kind` ('garra' | 'cafetera') sólo se usa al dar de alta una placa
+ * NUEVA — define para siempre qué tipo de firmware le corresponde (ver
+ * resolverFirmwareUpdate, que nunca le ofrece a una placa un .bin de
+ * otro kind). Si no viene (firmware de garra viejo, que no conoce este
+ * campo), default 'garra'. Una placa ya existente nunca cambia de kind
+ * por check-in — eso sería una forma fácil de romper la protección.
  *
  * - Si la MAC no existe todavía: la crea como "unclaimed" (sólo si la
  *   factory_key es válida) y le devuelve un claim_code para mostrar en
@@ -101,9 +108,10 @@ export async function POST(request: Request) {
     }
 
     const claimCode = generateClaimCode();
+    const kind = body.kind === "cafetera" ? "cafetera" : "garra";
     const { data: created, error } = await admin
       .from("devices")
-      .insert({ mac, claim_code: claimCode, status: "unclaimed", ...nowFields })
+      .insert({ mac, claim_code: claimCode, status: "unclaimed", kind, ...nowFields })
       .select("*")
       .single();
 
@@ -229,12 +237,12 @@ function normalizarVersion(v: string): string {
 
 async function resolverFirmwareUpdate(
   admin: ReturnType<typeof createAdminClient>,
-  device: { id: string },
+  device: { id: string; kind: string },
   reportedFirmwareVersion: string | null
 ) {
   const { data: pendiente } = await admin
     .from("device_firmware_status")
-    .select("status, updated_at, firmware_version_id, firmware_versions(version, bin_url, changelog)")
+    .select("status, updated_at, firmware_version_id, firmware_versions(version, bin_url, changelog, kind)")
     .eq("device_id", device.id)
     .in("status", ["accepted", "downloading"])
     .order("updated_at", { ascending: false })
@@ -248,6 +256,29 @@ async function resolverFirmwareUpdate(
     : pendiente.firmware_versions;
 
   if (!fv) return null;
+
+  // Cinturón y tiradores: aunque uploadFirmwareAction ya filtra por kind
+  // al notificar, nunca mandamos un .bin que no sea del mismo tipo que
+  // la placa. Si por lo que sea aparece un cruce, lo descartamos del
+  // todo (dismissed) en vez de arriesgarnos a instalarlo — es
+  // preferible que quede sin actualizar a que se le suba el firmware
+  // equivocado a una cafetera (o a una garra) en producción.
+  if (fv.kind !== device.kind) {
+    await admin
+      .from("device_firmware_status")
+      .update({ status: "dismissed", updated_at: new Date().toISOString() })
+      .eq("device_id", device.id)
+      .eq("firmware_version_id", pendiente.firmware_version_id);
+
+    await logDeviceEvent(
+      admin,
+      device.id,
+      "firmware_update",
+      `Descartado ${fv.version}: es firmware de "${fv.kind}" y esta placa es "${device.kind}".`
+    );
+
+    return null;
+  }
 
   // La placa ya reportó la versión que estábamos esperando -> ya se
   // actualizó sola y reinició. Cerramos el ciclo.

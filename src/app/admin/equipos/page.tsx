@@ -1,16 +1,29 @@
 import { requireAdmin } from "@/lib/supabase/auth";
 import { Card } from "@/components/Card";
 import { DeviceStatusRow } from "@/components/admin/DeviceStatusRow";
+import { FolderBrowser } from "@/components/dashboard/FolderBrowser";
+import { MoveToFolderMenu } from "@/components/dashboard/MoveToFolderMenu";
+import { listFoldersForOwner } from "@/lib/folders";
 import type { Device, Profile } from "@/lib/supabase/types";
 
-export default async function AdminEquiposPage() {
-  const { supabase } = await requireAdmin();
+export default async function AdminEquiposPage(
+  props: PageProps<"/admin/equipos">
+) {
+  const { user, supabase } = await requireAdmin();
+  const sp = await props.searchParams;
 
   const { data: devices } = await supabase
     .from("devices")
     .select("*")
     .order("created_at", { ascending: false })
     .returns<Device[]>();
+
+  // El admin tiene su propio árbol de carpetas (separado del de cada
+  // dueño) — puede guardar ahí máquinas de cualquier owner, es sólo
+  // organización visual para el panel de admin.
+  const folders = await listFoldersForOwner(supabase, user.id);
+  const carpetaActual =
+    typeof sp.carpeta === "string" && sp.carpeta.length > 0 ? sp.carpeta : null;
 
   const ownerIds = [...new Set((devices ?? []).map((d) => d.owner_id).filter(Boolean))] as string[];
 
@@ -28,11 +41,12 @@ export default async function AdminEquiposPage() {
     return o ? o.display_name ?? o.username : null;
   };
 
-  const list = devices ?? [];
+  const all = devices ?? [];
+  const list = all.filter((d) => (d.folder_id ?? null) === carpetaActual);
   const counts = {
-    claimed: list.filter((d) => d.status === "claimed").length,
-    unclaimed: list.filter((d) => d.status === "unclaimed").length,
-    revoked: list.filter((d) => d.status === "revoked").length,
+    claimed: all.filter((d) => d.status === "claimed").length,
+    unclaimed: all.filter((d) => d.status === "unclaimed").length,
+    revoked: all.filter((d) => d.status === "revoked").length,
   };
 
   return (
@@ -67,6 +81,8 @@ export default async function AdminEquiposPage() {
         </Card>
       </div>
 
+      <FolderBrowser folders={folders} deviceCountByFolder={all} />
+
       <div>
         <div className="hidden grid-cols-[2.2fr_1.6fr_1.2fr_0.5fr_1.4fr] border-b border-line px-4 pb-2.5 text-[11px] font-bold tracking-wide text-ink-faint sm:grid">
           <div>CÓDIGO ID</div>
@@ -77,14 +93,31 @@ export default async function AdminEquiposPage() {
         </div>
 
         <div className="mt-2 space-y-2.5">
-          {list.length === 0 && (
+          {all.length === 0 ? (
             <p className="py-10 text-center text-sm text-ink-faint">
               Todavía no hay ninguna placa que haya hecho check-in.
             </p>
+          ) : list.length === 0 ? (
+            <p className="py-10 text-center text-sm text-ink-faint">
+              No hay máquinas sueltas acá — entrá a una carpeta o movés
+              alguna con el 📁 de su fila.
+            </p>
+          ) : (
+            list.map((d) => (
+              <div key={d.id} className="flex items-start gap-2">
+                <div className="flex-1">
+                  <DeviceStatusRow device={d} ownerName={ownerName(d.owner_id)} />
+                </div>
+                <div className="pt-4">
+                  <MoveToFolderMenu
+                    deviceId={d.id}
+                    currentFolderId={d.folder_id}
+                    folders={folders}
+                  />
+                </div>
+              </div>
+            ))
           )}
-          {list.map((d) => (
-            <DeviceStatusRow key={d.id} device={d} ownerName={ownerName(d.owner_id)} />
-          ))}
         </div>
       </div>
     </div>
