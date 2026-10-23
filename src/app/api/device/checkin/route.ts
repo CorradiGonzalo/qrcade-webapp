@@ -59,10 +59,13 @@ export async function POST(request: Request) {
   };
 
   // Camino rápido (99%+ de los check-ins: la placa ya está dada de alta).
-  // Un solo viaje a Supabase en vez de los 2 de antes (select + update) —
-  // ver migración 0007_checkin_touch_rpc.sql. La factory_key NO se valida
-  // acá: nunca hizo falta para una placa ya existente, sólo protege el
-  // alta de una nueva más abajo.
+  // Un solo viaje a Supabase que trae TODO lo que hace falta — placa
+  // actualizada, comandos pendientes (ya reconocidos), combos y firmware
+  // pendiente — en vez de hasta 4 viajes separados de antes. Ver
+  // migración 0010_checkin_full_rpc.sql (que a su vez terminó lo que
+  // había arrancado 0007_checkin_touch_rpc.sql). La factory_key NO se
+  // valida acá: nunca hizo falta para una placa ya existente, sólo
+  // protege el alta de una nueva más abajo.
   const { data: touchResult, error: touchError } = await admin.rpc(
     "touch_device_checkin",
     {
@@ -155,43 +158,26 @@ export async function POST(request: Request) {
     });
   }
 
-  // claimed: le mandamos los comandos pendientes (restart / test_dispense /
-  // a futuro dispense con cantidad) y lo necesario para armar el QR de
-  // cobro. La ESP los ejecuta y los da por hechos apenas los recibe (no hay
-  // ack de vuelta) — por eso los marcamos como reconocidos ya en esta misma
-  // respuesta.
-  const { data: pendingCommands } = await admin
-    .from("device_commands")
-    .select("id, command")
-    .eq("device_id", device.id)
-    .is("acknowledged_at", null)
-    .order("created_at", { ascending: true });
+  // claimed: comandos pendientes, combos y firmware pendiente ya vinieron
+  // en el mismo RPC de arriba (touch_device_checkin) — acá sólo
+  // resolvemos la lógica de negocio del firmware (que sí puede implicar
+  // una escritura aparte, pero sólo durante la ventana real de un OTA en
+  // curso, no en cada check-in de rutina).
+  const pendingCommands: { id: string; command: string }[] =
+    touchRow?.pending_commands ?? [];
 
-  if (pendingCommands && pendingCommands.length > 0) {
-    await admin
-      .from("device_commands")
-      .update({ acknowledged_at: new Date().toISOString() })
-      .in(
-        "id",
-        pendingCommands.map((c) => c.id)
-      );
-  }
-
-  const firmwareUpdate = await resolverFirmwareUpdate(admin, device, nowFields.firmware_version);
+  const firmwareUpdate = await resolverFirmwareUpdate(
+    admin,
+    device,
+    nowFields.firmware_version,
+    touchRow?.firmware_pending ?? null
+  );
 
   // En modo "combo" (monto abierto), la ESP necesita saber qué opciones
   // mostrar junto al QR — si no, el cliente escanea y no tiene forma de
-  // saber qué monto pagar para qué cantidad de fichas. Ordenado por monto
-  // ascendente para que se dibuje siempre en el mismo orden en pantalla.
-  let combos: { monto: number; fichas: number }[] | null = null;
-  if (device.mode === "combo") {
-    const { data: comboRows } = await admin
-      .from("device_ficha_combos")
-      .select("monto, fichas")
-      .eq("device_id", device.id)
-      .order("monto", { ascending: true });
-    combos = comboRows ?? [];
-  }
+  // saber qué monto pagar para qué cantidad de fichas.
+  const combos: { monto: number; fichas: number }[] | null =
+    touchRow?.combos ?? null;
 
   return NextResponse.json({
     status: "claimed",
@@ -235,27 +221,29 @@ function normalizarVersion(v: string): string {
   return v.trim().toLowerCase().replace(/^v/, "");
 }
 
+type FirmwarePendingRow = {
+  status: "accepted" | "downloading";
+  updated_at: string;
+  firmware_version_id: string;
+  version: string;
+  bin_url: string;
+  changelog: string | null;
+  kind: string;
+};
+
 async function resolverFirmwareUpdate(
   admin: ReturnType<typeof createAdminClient>,
   device: { id: string; kind: string },
-  reportedFirmwareVersion: string | null
+  reportedFirmwareVersion: string | null,
+  pendiente: FirmwarePendingRow | null
 ) {
-  const { data: pendiente } = await admin
-    .from("device_firmware_status")
-    .select("status, updated_at, firmware_version_id, firmware_versions(version, bin_url, changelog, kind)")
-    .eq("device_id", device.id)
-    .in("status", ["accepted", "downloading"])
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
+  // `pendiente` ya viene resuelto desde touch_device_checkin (RPC) — acá
+  // sólo aplicamos la lógica de negocio, que a veces implica una
+  // escritura aparte (dismiss / downloading / updated), pero eso sólo
+  // pasa durante una actualización real en curso, no en cada check-in.
   if (!pendiente) return null;
 
-  const fv = Array.isArray(pendiente.firmware_versions)
-    ? pendiente.firmware_versions[0]
-    : pendiente.firmware_versions;
-
-  if (!fv) return null;
+  const fv = pendiente;
 
   // Cinturón y tiradores: aunque uploadFirmwareAction ya filtra por kind
   // al notificar, nunca mandamos un .bin que no sea del mismo tipo que
