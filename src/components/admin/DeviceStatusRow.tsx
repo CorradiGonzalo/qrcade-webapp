@@ -6,8 +6,9 @@ import {
   revokeDeviceAction,
   reactivateDeviceAction,
   regenerateDeviceCodeAction,
+  setDeviceKindAction,
 } from "@/lib/actions/admin";
-import type { Device } from "@/lib/supabase/types";
+import type { Device, DeviceKind } from "@/lib/supabase/types";
 
 const STATUS_META = {
   claimed: { tone: "ok" as const, label: "Reclamada" },
@@ -48,6 +49,13 @@ export function DeviceStatusRow({
     startTransition(() => regenerateDeviceCodeAction(device.id));
   }
 
+  function toggleKind() {
+    const nuevoKind: DeviceKind = device.kind === "cafetera" ? "garra" : "cafetera";
+    const message = `Vas a marcar esta placa como "${nuevoKind}". Esto sólo cambia el tipo — no borra ninguna config que ya tenga cargada. ¿Confirmás?`;
+    if (!window.confirm(message)) return;
+    startTransition(() => setDeviceKindAction(device.id, nuevoKind));
+  }
+
   return (
     <div
       className={`grid grid-cols-1 items-start gap-2 rounded-[10px] border p-4 sm:grid-cols-[2.2fr_1.6fr_1.2fr_0.5fr_1.4fr] sm:items-center sm:gap-0 ${
@@ -57,9 +65,15 @@ export function DeviceStatusRow({
       <div>
         <div className="flex items-center gap-1.5">
           <span className="font-mono text-[13px] font-semibold">{device.mac}</span>
-          <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-bold text-ink-faint">
+          <button
+            type="button"
+            disabled={pending}
+            onClick={toggleKind}
+            title={`Tipo: ${device.kind === "cafetera" ? "Cafetera" : "Garra"} — click para cambiar`}
+            className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-bold text-ink-faint hover:bg-surface-3 disabled:opacity-50"
+          >
             {device.kind === "cafetera" ? "☕" : "🕹"}
-          </span>
+          </button>
         </div>
         {device.status === "unclaimed" && device.claim_code && (
           <button

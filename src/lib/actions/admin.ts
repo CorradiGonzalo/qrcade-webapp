@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { generateTemporaryPassword, generateClaimCode } from "@/lib/device-codes";
+import type { DeviceKind } from "@/lib/supabase/types";
 
 async function requireAdminSession() {
   const supabase = await createClient();
@@ -106,6 +107,26 @@ export async function reactivateDeviceAction(deviceId: string) {
       status: device?.owner_id ? "claimed" : "unclaimed",
       revoked_at: null,
     })
+    .eq("id", deviceId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/admin/equipos");
+}
+
+/**
+ * Cambia el "kind" (garra/cafetera) de una placa. No existía forma de
+ * setear esto desde ningún lado después del alta inicial — las placas
+ * nuevas quedan con el default de la base (garra) hasta que un admin las
+ * marca a mano acá. Sólo toca la columna `kind`; no borra ni toca ninguna
+ * config de cobro existente (si alguien cambia el tipo de una placa que ya
+ * tenía combos/billing de garra o cafe_config de cafetera, esos datos
+ * quedan ahí sin usarse, no se pierden — por si el cambio fue sin querer).
+ */
+export async function setDeviceKindAction(deviceId: string, kind: DeviceKind) {
+  await requireAdminSession();
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("devices")
+    .update({ kind })
     .eq("id", deviceId);
   if (error) throw new Error(error.message);
   revalidatePath("/admin/equipos");
