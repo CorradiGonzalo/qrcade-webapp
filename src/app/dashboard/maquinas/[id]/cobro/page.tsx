@@ -44,7 +44,10 @@ export default async function CobroPage(
       </h1>
       <p className="mb-7 text-[13px] text-ink-muted">
         Estos datos arman la caja en tu cuenta de Mercado Pago y quedan
-        cacheados acá — la ESP sólo dibuja el QR resultante.
+        cacheados acá —{" "}
+        {device.kind === "cafetera"
+          ? "esta máquina no tiene pantalla, así que después vas a poder descargar el QR en PDF para imprimirlo."
+          : "la placa sólo dibuja el QR resultante."}
       </p>
 
       <DeviceBillingForm

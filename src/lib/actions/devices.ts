@@ -126,7 +126,18 @@ export async function saveDeviceBillingAction(
   const mpUserId = profile.mp_user_id;
   const base = externalIdBase(device.id);
   const externalIdTienda = "TIENDA-" + sanitizar(localName) + "-" + base;
-  const externalIdCaja = soloAlfanumerico("CAJA" + sanitizar(cajaName) + base);
+  // Para cafetera, el external_id de la caja/orden tiene que ser EXACTO el
+  // mismo valor que ya usa el firmware para buscar sus propios pagos por
+  // external_reference (devices.cafe_mp_external_reference, migración
+  // 0011) — así el pago le sirve tanto al polling de la placa (que
+  // dispara el relé) como a este flujo (que lleva la cuenta de ventas y
+  // re-arma el QR de monto fijo para la próxima venta, vía el webhook).
+  // Para garra, sin cambios: sigue siendo el id derivado del nombre de
+  // la caja.
+  const externalIdCaja =
+    device.kind === "cafetera" && device.cafe_mp_external_reference
+      ? device.cafe_mp_external_reference
+      : soloAlfanumerico("CAJA" + sanitizar(cajaName) + base);
 
   let qrData: string;
   try {

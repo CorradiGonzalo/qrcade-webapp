@@ -52,23 +52,6 @@ export function CafeteraConfigForm({
       )}
 
       <div className="rounded-2xl border border-line bg-surface p-6">
-        <div className="mb-1 text-sm font-bold">Identificador de pago (MP)</div>
-        <p className="mb-3 text-xs text-ink-muted">
-          Esto es lo que distingue los pagos de ESTA cafetera de los de
-          otra máquina de la misma cuenta. Se generó solo a partir de la
-          MAC — si esta placa venía con el firmware viejo y ya tenía
-          pagos andando con otro external_reference, hay que actualizar
-          la config de cobro de Mercado Pago de esta máquina puntual para
-          que apunte a este valor.
-        </p>
-        <div className="flex items-center gap-2 rounded-lg border border-line-soft bg-surface-2 px-3.5 py-3">
-          <code className="flex-1 overflow-x-auto text-xs font-semibold text-ink">
-            {device.cafe_mp_external_reference}
-          </code>
-        </div>
-      </div>
-
-      <div className="rounded-2xl border border-line bg-surface p-6">
         <div className="mb-1 text-sm font-bold">Limpieza</div>
         <p className="mb-4 text-xs text-ink-muted">
           2 pulsos de relé separados por 20s. Se dispara sola cada tantos

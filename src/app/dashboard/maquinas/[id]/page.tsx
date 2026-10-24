@@ -131,14 +131,12 @@ export default async function DeviceDetailPage(
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
-          {!esCafetera && (
-            <Link
-              href={`/dashboard/maquinas/${device.id}/cobro`}
-              className="rounded-[9px] border border-line-soft bg-surface-2 px-4 py-2.5 text-[13px] font-semibold text-ink"
-            >
-              ⚙ Configurar cobro
-            </Link>
-          )}
+          <Link
+            href={`/dashboard/maquinas/${device.id}/cobro`}
+            className="rounded-[9px] border border-line-soft bg-surface-2 px-4 py-2.5 text-[13px] font-semibold text-ink"
+          >
+            ⚙ Configurar cobro
+          </Link>
           <DeviceActions device={device} />
         </div>
       </div>
@@ -186,7 +184,6 @@ export default async function DeviceDetailPage(
             </div>
           </div>
 
-          {!esCafetera && (
           <div className="rounded-2xl border border-line bg-surface p-[22px]">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div className="text-sm font-bold">Ventas</div>
@@ -252,7 +249,6 @@ export default async function DeviceDetailPage(
               </>
             )}
           </div>
-          )}
 
           <div className="mt-4 rounded-2xl border border-line bg-surface p-[22px]">
             <div className="mb-3 text-sm font-bold">Actividad</div>
@@ -284,9 +280,6 @@ export default async function DeviceDetailPage(
         </div>
 
         <div>
-          {esCafetera ? (
-            <CafeteraConfigForm device={device} hasAccountToken={hasAccountToken} />
-          ) : (
           <div className="rounded-2xl border border-line bg-surface p-6 text-center">
             <div className="mb-4 text-left text-sm font-bold">
               Código QR activo
@@ -309,8 +302,9 @@ export default async function DeviceDetailPage(
                   )}
                 </div>
                 <div className="mt-3.5 text-[11px] text-ink-faint">
-                  Esto es una vista previa — el que importa es el que
-                  dibuja la placa.
+                  {esCafetera
+                    ? "Esta máquina no tiene pantalla — descargá el PDF e imprimilo para pegarlo en la cafetera."
+                    : "Esto es una vista previa — el que importa es el que dibuja la placa."}
                 </div>
                 <div className="mt-1 text-[11px] text-ink-faint">
                   {device.local_name} · {device.caja_name} ·{" "}
@@ -318,6 +312,14 @@ export default async function DeviceDetailPage(
                     ? `$${device.mp_monto_fijo} fijo`
                     : "monto abierto (combos)"}
                 </div>
+                {esCafetera && (
+                  <a
+                    href={`/api/device/${device.id}/qr-pdf`}
+                    className="mt-4 inline-flex items-center justify-center rounded-lg bg-brand px-4 py-2.5 text-[13px] font-semibold text-white hover:opacity-90"
+                  >
+                    ⬇ Descargar QR en PDF
+                  </a>
+                )}
               </>
             ) : (
               <div className="rounded-lg border border-dashed border-line-soft p-8 text-xs text-ink-faint">
@@ -331,6 +333,11 @@ export default async function DeviceDetailPage(
               </div>
             )}
           </div>
+
+          {esCafetera && (
+            <div className="mt-4">
+              <CafeteraConfigForm device={device} hasAccountToken={hasAccountToken} />
+            </div>
           )}
 
           <div className="mt-4 rounded-2xl border border-line bg-surface p-5">
