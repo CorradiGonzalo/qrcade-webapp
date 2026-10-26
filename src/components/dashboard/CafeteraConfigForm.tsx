@@ -96,7 +96,7 @@ export function CafeteraConfigForm({
 
           <details className="rounded-lg border border-line-soft bg-surface-2 px-3.5 py-3">
             <summary className="cursor-pointer text-xs font-semibold text-ink-muted">
-              Avanzado (pulso / relé / calentador / reset BT)
+              Avanzado (pulso / relé / calentador)
             </summary>
             <div className="mt-3.5 space-y-4">
               <div>
@@ -181,17 +181,6 @@ export function CafeteraConfigForm({
                 </div>
               </div>
 
-              <div>
-                <label className="mb-1.5 block text-xs font-semibold text-ink-muted">
-                  Comando de reset remoto por BLE
-                </label>
-                <input
-                  name="cafe_bt_reset_cmd"
-                  maxLength={40}
-                  defaultValue={device.cafe_bt_reset_cmd}
-                  className="w-full rounded-lg border border-line bg-surface px-3.5 py-2.5 text-sm text-ink outline-none focus:border-brand"
-                />
-              </div>
             </div>
           </details>
 

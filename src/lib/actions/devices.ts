@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { logDeviceEvent } from "@/lib/device-events";
+import { generateDisplayPairingCode } from "@/lib/device-codes";
 import type { Device, Profile } from "@/lib/supabase/types";
 import {
   MercadoPagoError,
@@ -226,11 +227,6 @@ export async function saveCafeteraConfigAction(
     return { error: err instanceof Error ? err.message : "Datos inválidos." };
   }
 
-  const btResetCmd = String(formData.get("cafe_bt_reset_cmd") || "").trim();
-  if (!btResetCmd || btResetCmd.length > 40) {
-    return { error: "El comando de reset BT tiene que tener entre 1 y 40 caracteres." };
-  }
-
   const pulsoNivelHigh = formData.get("cafe_pulso_nivel_high") === "on";
 
   const { data: device } = await supabase
@@ -254,7 +250,6 @@ export async function saveCafeteraConfigAction(
       cafe_heat_on_min: heatOnMin,
       cafe_heat_off_min: heatOffMin,
       cafe_clean_every_n_cycles: cleanEveryNCycles,
-      cafe_bt_reset_cmd: btResetCmd,
       cafe_pulso_nivel_high: pulsoNivelHigh,
     })
     .eq("id", deviceId);
@@ -421,6 +416,47 @@ export async function requestCleanCycleAction(deviceId: string) {
   );
 
   revalidatePath(`/dashboard/maquinas/${deviceId}`);
+}
+
+/**
+ * Sólo para cafeteras: genera (o regenera) el código de emparejamiento
+ * para una ESP32 "sólo pantalla" sin relé (ver migración 0014 y
+ * api/display/[code]/qr). No toca nada de la placa que cobra — es
+ * pura lectura del lado de esa segunda placa, nunca al revés.
+ */
+export async function generateDisplayPairingCodeAction(deviceId: string) {
+  const { supabase, userId } = await ownedSupabase();
+
+  const { data: device } = await supabase
+    .from("devices")
+    .select("id, kind")
+    .eq("id", deviceId)
+    .eq("owner_id", userId)
+    .single<Pick<Device, "id" | "kind">>();
+
+  if (!device) throw new Error("No se encontró la máquina.");
+  if (device.kind !== "cafetera") {
+    throw new Error("El código de pantalla sólo existe para cafeteras.");
+  }
+
+  // Reintenta unas pocas veces por si el código al azar choca con uno
+  // ya existente (la columna es unique) — con 8 caracteres de un
+  // alfabeto de 32 símbolos la chance es mínima, pero el choque hay
+  // que manejarlo igual.
+  let ultimoError: string | null = null;
+  for (let intento = 0; intento < 5; intento++) {
+    const code = generateDisplayPairingCode();
+    const { error } = await supabase
+      .from("devices")
+      .update({ display_pairing_code: code })
+      .eq("id", deviceId);
+    if (!error) {
+      revalidatePath(`/dashboard/maquinas/${deviceId}`);
+      return { code };
+    }
+    ultimoError = error.message;
+  }
+  throw new Error(ultimoError ?? "No se pudo generar el código. Probá de nuevo.");
 }
 
 export async function respondFirmwareAction(

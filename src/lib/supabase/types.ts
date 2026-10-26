@@ -58,6 +58,9 @@ export interface Device {
   cafe_clean_every_n_cycles: number;
   cafe_bt_reset_cmd: string;
   cafe_pulso_nivel_high: boolean;
+  // Ver migración 0014 — sólo se usa para que una ESP32 "sólo pantalla"
+  // (sin relé) pida el QR vigente sin ser tratada como una placa nueva.
+  display_pairing_code: string | null;
   created_at: string;
   claimed_at: string | null;
   revoked_at: string | null;

@@ -14,10 +14,19 @@
 
     B) La lógica real de la cafetera (reconstruida en esp32_mpay_replica.ino
        a partir del análisis de la placa ya soldada): pines de relé/pulso/
-       calentador, limpieza automática y manual, reset remoto por BLE, y el
-       polling directo a la API de Mercado Pago desde la ESP32 (a pedido
-       explícito del dueño, esto se queda en la placa — no se mueve a un
-       webhook del servidor).
+       calentador, limpieza automática y manual, y el polling directo a la
+       API de Mercado Pago desde la ESP32 (a pedido explícito del dueño,
+       esto se queda en la placa — no se mueve a un webhook del servidor).
+
+  SE SACÓ EL BLE POR COMPLETO (reset remoto por Bluetooth, que tenía el
+  programa original): la placa se maneja entera desde la app — el reinicio
+  remoto sigue existiendo, pero sólo vía comando "restart" desde el panel.
+  De paso, sacar BLE le devuelve a la placa memoria/radio que esa pila
+  reservaba de forma permanente (candidato fuerte a por qué "maxAlloc"
+  quedaba siempre pisado en ~34KB sin importar el heap total libre) y
+  elimina la contención WiFi/Bluetooth por la misma antena — una causa
+  real de las fallas de conexión intermitentes que venía mostrando esta
+  placa tanto contra el backend como contra Mercado Pago.
 
   LO QUE CAMBIA respecto a la réplica original: el portal cautivo de la
   placa (red "QRcade_Config") AHORA SOLO configura WiFi. Ya no tiene los
@@ -51,15 +60,13 @@
   Librerías necesarias (Arduino Library Manager):
     - WiFiManager (tzapu)
     - ArduinoJson (bblanchon)
-    - Preferences / BLEDevice / BLEServer / BLEUtils / HTTPClient / HTTPUpdate
+    - Preferences / HTTPClient / HTTPUpdate
       (todas incluidas en el core ESP32, no hace falta instalar nada aparte)
 
-  Partition Scheme en Arduino IDE: a diferencia de la garra, este firmware
-  pesa más por la librería BLE — con "Default 4MB with spiffs" (1.25MB por
-  partición de app) NO entra ("text section exceeds available space").
-  Usar Tools > Partition Scheme > "Minimal SPIFFS (1.9MB APP with OTA)":
-  sigue teniendo dos particiones de app (OTA funciona), con 1.9MB cada una
-  entra con margen. "Huge APP" tampoco sirve (una sola partición, sin OTA).
+  Partition Scheme en Arduino IDE: sin BLE el sketch pesa bastante menos
+  que antes, así que "Default 4MB with spiffs" debería entrar sin drama.
+  Si por algún motivo no entra, usar "Minimal SPIFFS (1.9MB APP with OTA)"
+  como antes — no hace daño, sólo da más margen.
   ============================================================================
 */
 
@@ -71,10 +78,6 @@
 #include <ArduinoJson.h>
 #include <esp_task_wdt.h>
 #include <HTTPUpdate.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
 
 // ============================================================================
 //                          CONFIG DE FÁBRICA (por tanda)
@@ -102,16 +105,6 @@ static const unsigned long CONFIG_BUTTON_HOLD_MS = 2000;      // mantenido AL AR
 static const unsigned long FACTORY_RESET_HOLD_MS = 4000;      // mantenido EN OPERACIÓN -> borrado de fábrica
 
 // ============================================================================
-//                          BLE (Nordic UART Service) — reset remoto
-// ============================================================================
-#define NUS_SERVICE_UUID   "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-#define NUS_CHAR_RX_UUID   "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
-#define NUS_CHAR_TX_UUID   "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
-
-BLECharacteristic *pTxChar = nullptr;
-bool bleClienteConectado = false;
-
-// ============================================================================
 //                          BLINDAJE / HARDENING (igual que la garra)
 // ============================================================================
 static const bool DEBUG_LOG = true;
@@ -123,9 +116,21 @@ static const unsigned long WIFI_DOWN_RESTART_MS = 5UL * 60UL * 1000UL;        //
 static const unsigned long RESTART_INTERVAL_MS = 12UL * 60UL * 60UL * 1000UL; // 12 h
 static const uint32_t HEAP_SAFETY_THRESHOLD = 20000;                          // bytes
 
-// No hay pantalla que refrescar y van a ser 21+ placas pegándole al mismo
-// backend — un poco más relajado que los 5s de la garra.
-static const unsigned long CHECKIN_INTERVAL_MS = 15000;
+// IMPORTANTE: el check-in contra nuestro backend DEJÓ de ser "sólo
+// config/pausa/comandos no urgentes". Resulta que el comando
+// "dispense:N" que manda el webhook de Mercado Pago cuando confirma un
+// pago (ver procesarComandos) es, en la práctica, la detección de pago
+// que SÍ funciona — la consulta directa a MP desde la placa
+// (consultarMercadoPago) viene devolviendo 200 OK sin encontrar el pago
+// bajo la Orders API nueva. Mientras no se resuelva eso del lado de MP,
+// el check-in es el camino real por el que se entera un pago, así que
+// tiene que ser rápido — lo mismo que la consulta a MP. Habíamos subido
+// este intervalo a 2 minutos para aliviar la antena mientras sospechábamos
+// de contención entre las dos conexiones TLS, pero esa inestabilidad
+// resultó ser el BLE (ya sacado, ver cabecera del archivo) y no la
+// frecuencia: con BLE afuera, heap y maxAlloc quedaron sanos y las
+// conexiones salen bien una tras otra, así que lo volvemos a bajar.
+static const unsigned long CHECKIN_INTERVAL_MS = 10000;
 
 // ============================================================================
 //                          ESTADO DE CHECK-IN / BACKEND
@@ -158,7 +163,6 @@ unsigned long cfgCleanPulseMs = 3000;
 int  cfgHeatOnMin  = 20;
 int  cfgHeatOffMin = 5;
 int  cfgCleanEveryNCycles = 50;
-String cfgBtResetCmd = "RESET847200";
 bool cfgPulsoNivelHigh = true;
 
 bool cafeConfigCargada = false; // true en cuanto hay algo (cacheado o fresco) para operar
@@ -171,7 +175,28 @@ static const char *CAFE_PREFS_NS = "cafecfg";
 String lastPaymentId = "";
 uint32_t usedCredits = 0;
 unsigned long lastMpCheckMs = 0;
-static const unsigned long MP_CHECK_INTERVAL_MS = 60000; // 1 consulta a MP por minuto
+// El firmware original consultaba 1 vez por minuto ("Esperando 1 minuto sin
+// verificar pagos..."). Eso significa que un cliente que paga puede llegar
+// a esperar casi 60s a que se habilite la botonera — inaceptable para una
+// máquina real. Lo bajamos a 10s: sigue siendo una consulta liviana (no es
+// nada pesado para la API de MP), y un cliente esperando como mucho 10s es
+// razonable. Si en el futuro hay MUCHAS cafeteras compartiendo el mismo
+// Access Token de MP y aparecen límites de rate, este es el primer lugar
+// para subir el valor de nuevo (o volverlo configurable desde el panel,
+// como el resto de cafe_config).
+static const unsigned long MP_CHECK_INTERVAL_MS = 10000;
+
+// El check-in (cada 15s) y la consulta a MP (cada 10s) son independientes,
+// así que tarde o temprano sus timers caen en la MISMA vuelta de loop() —
+// ahí se abren dos conexiones TLS seguidas, una justo después de la otra,
+// sin que la pila WiFi/lwIP tenga margen para terminar de liberar la
+// anterior. En los logs reales eso coincide con rachas donde check-in Y
+// MP fallan juntos (ninguno de los dos por falta de heap: maxAlloc se
+// mantiene estable). Este timestamp compartido obliga a dejar un
+// colchón mínimo entre cualquier par de conexiones TLS, vengan de
+// check-in o de MP, para darle respiro a la pila de red entre una y otra.
+unsigned long lastRedOpMs = 0;
+static const unsigned long MIN_GAP_ENTRE_OPS_RED_MS = 2000;
 
 bool relayActivo = false;
 bool esperandoFinDeCiclo = false;
@@ -254,7 +279,6 @@ void cargarCafeConfigCacheada() {
   cfgHeatOnMin         = preferences.getInt("heat_on", cfgHeatOnMin);
   cfgHeatOffMin        = preferences.getInt("heat_off", cfgHeatOffMin);
   cfgCleanEveryNCycles = preferences.getInt("clean_n", cfgCleanEveryNCycles);
-  cfgBtResetCmd        = preferences.getString("bt_cmd", cfgBtResetCmd);
   cfgPulsoNivelHigh    = preferences.getBool("pulso_hi", cfgPulsoNivelHigh);
   lastPaymentId        = preferences.getString("last_id", "");
   usedCredits          = preferences.getUInt("used_cred", 0);
@@ -283,7 +307,6 @@ void guardarCafeConfigCacheada() {
   preferences.putInt("heat_on", cfgHeatOnMin);
   preferences.putInt("heat_off", cfgHeatOffMin);
   preferences.putInt("clean_n", cfgCleanEveryNCycles);
-  preferences.putString("bt_cmd", cfgBtResetCmd);
   preferences.putBool("pulso_hi", cfgPulsoNivelHigh);
   preferences.putBool("tiene_cfg", true);
   preferences.end();
@@ -315,7 +338,6 @@ void aplicarCafeConfig(JsonObject cfg) {
   if (!cfg["heat_on_min"].isNull()) cfgHeatOnMin = cfg["heat_on_min"].as<int>();
   if (!cfg["heat_off_min"].isNull()) cfgHeatOffMin = cfg["heat_off_min"].as<int>();
   if (!cfg["clean_every_n_cycles"].isNull()) cfgCleanEveryNCycles = cfg["clean_every_n_cycles"].as<int>();
-  if (cfg["bt_reset_cmd"].is<const char *>()) cfgBtResetCmd = String((const char *)cfg["bt_reset_cmd"]);
   if (!cfg["pulso_nivel_high"].isNull()) cfgPulsoNivelHigh = cfg["pulso_nivel_high"].as<bool>();
 
   configurarPinPulso();
@@ -324,8 +346,17 @@ void aplicarCafeConfig(JsonObject cfg) {
 }
 
 // ============================================================================
-//            BLE — Nordic UART Service, reset remoto (igual que antes)
+//            BORRADO DE FABRICA (botón BOOT en operación, o comando remoto)
 // ============================================================================
+// Antes esto también se podía disparar por BLE (reset remoto por Bluetooth,
+// igual que el programa original). Se sacó todo el BLE a pedido explícito:
+// la idea es que la placa se maneje entera desde la app — y de paso, sacar
+// BLE libera la memoria/radio que esa pila reservaba de forma permanente
+// (es la causa más probable de que maxAlloc quedara siempre pisado en
+// ~34KB, sin importar cuánto heap total hubiera libre) y elimina la
+// contención WiFi/BT por la misma antena. El reinicio remoto sigue
+// existiendo igual — ahora SOLO por el comando "restart" que manda la app
+// vía check-in (ver procesarComandos más abajo).
 void borrarWifiYConfigCompleta() {
   logLine(">> Borrando WiFi + config de cafetera cacheada por completo...");
   wm.resetSettings();
@@ -338,55 +369,6 @@ void borrarWifiYConfigCompleta() {
   logLine(">> Reiniciando...");
   delay(300);
   ESP.restart();
-}
-
-class RxCallback : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic *pChar) override {
-    String recibido = String(pChar->getValue().c_str());
-    logLine("[BLE] Recibido: " + recibido);
-    if (recibido == cfgBtResetCmd) {
-      logLine("[BLE] Comando correcto. Reset de fabrica solicitado.");
-      pTxChar->setValue("OK_RESET");
-      pTxChar->notify();
-      delay(200);
-      borrarWifiYConfigCompleta();
-    } else {
-      logLine("[BLE] Comando incorrecto.");
-      pTxChar->setValue("ERROR_CMD");
-      pTxChar->notify();
-    }
-  }
-};
-
-class ServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer *pServer) override {
-    bleClienteConectado = true;
-    logLine("[BLE] Cliente conectado.");
-  }
-  void onDisconnect(BLEServer *pServer) override {
-    bleClienteConectado = false;
-    logLine("[BLE] Cliente desconectado, reiniciando advertising.");
-    pServer->getAdvertising()->start();
-  }
-};
-
-void iniciarBLE(const String &nombreDispositivo) {
-  logLine("[BLE] Iniciando (" + nombreDispositivo + ")...");
-  BLEDevice::init(nombreDispositivo.c_str());
-  BLEServer *pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new ServerCallbacks());
-
-  BLEService *pService = pServer->createService(NUS_SERVICE_UUID);
-
-  pTxChar = pService->createCharacteristic(NUS_CHAR_TX_UUID, BLECharacteristic::PROPERTY_NOTIFY);
-  pTxChar->addDescriptor(new BLE2902());
-
-  BLECharacteristic *pRxChar = pService->createCharacteristic(NUS_CHAR_RX_UUID, BLECharacteristic::PROPERTY_WRITE);
-  pRxChar->setCallbacks(new RxCallback());
-
-  pService->start();
-  pServer->getAdvertising()->start();
-  logLine("[BLE] Listo y visible.");
 }
 
 // ============================================================================
@@ -484,31 +466,112 @@ bool consultarMercadoPago() {
     return false;
   }
 
-  String url = "https://api.mercadopago.com/v1/payments/search"
-               "?limit=1&offset=0&operation_type=regular_payment"
-               "&status=approved&sort=date_last_updated&criteria=desc"
-               "&external_reference=" + cfgMpExternalRef;
+  const unsigned long CONNECT_TIMEOUT_MS = 5000;
+  const unsigned long RESPUESTA_DEADLINE_MS = 6000;
+  const char* MP_HOST = "api.mercadopago.com";
+  const int MP_PORT = 443;
 
-  HTTPClient http;
-  http.setConnectTimeout(5000);
-  http.setTimeout(6000);
-  if (!http.begin(url)) {
-    logLine("!! MP: http.begin() fallo.");
+  String path = "/v1/payments/search"
+                "?limit=1&offset=0&operation_type=regular_payment"
+                "&status=approved&sort=date_last_updated&criteria=desc"
+                "&external_reference=" + cfgMpExternalRef;
+
+  logLine(">> MP: heap libre=" + String(ESP.getFreeHeap()) +
+          " maxAlloc=" + String(ESP.getMaxAllocHeap()) + " antes de consultar.");
+
+  // Antes usábamos HTTPClient (como en el check-in, primer intento), pero
+  // seguía fallando con "status -1" incluso pasándole un WiFiClientSecure
+  // propio con setInsecure(). El log de heap mostró que maxAlloc quedaba
+  // siempre pisado en ~34KB sin importar cuánto heap total hubiera libre
+  // — fragmentación, no falta de memoria. Esto coincidía con que BLE
+  // estaba corriendo (esa pila reserva un bloque de memoria fijo que ya
+  // no se puede recuperar mientras esté activa); sacar BLE por completo
+  // (ver cabecera del archivo) debería haber liberado esa parte. Igual
+  // se deja esta consulta SIN HTTPClient: abre el socket TLS a mano y
+  // arma/parsea el HTTP como en backendCheckin(), que es el mismo patrón
+  // ya probado en producción con las garras y pesa menos memoria.
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(CONNECT_TIMEOUT_MS / 1000);
+
+  if (!client.connect(MP_HOST, MP_PORT, CONNECT_TIMEOUT_MS)) {
+    // RSSI y heap en el momento exacto del fallo — si esto pasa en racha
+    // junto con fallos de check-in, el patrón es contención entre las dos
+    // conexiones TLS seguidas, no falta de señal ni de memoria.
+    logLine("!! MP: no se pudo conectar (status -1). RSSI=" + String(WiFi.RSSI()) +
+            " heapLibre=" + String(ESP.getFreeHeap()));
     return false;
   }
-  http.addHeader("Authorization", "Bearer " + cfgMpAccessToken);
-  http.addHeader("Accept", "application/json");
-  http.addHeader("Accept-Encoding", "identity");
 
-  int httpStatus = http.GET();
-  if (httpStatus != 200) {
-    logLine("!! MP: respuesta no OK (status " + String(httpStatus) + ").");
-    http.end();
+  String request = "GET " + path + " HTTP/1.1\r\n";
+  request += "Host: " + String(MP_HOST) + "\r\n";
+  request += "Authorization: Bearer " + cfgMpAccessToken + "\r\n";
+  request += "Accept: application/json\r\n";
+  request += "Accept-Encoding: identity\r\n";
+  request += "Connection: close\r\n\r\n";
+
+  client.print(request);
+
+  unsigned long tEsperaInicio = millis();
+  while (client.connected() && !client.available()) {
+    if (millis() - tEsperaInicio > RESPUESTA_DEADLINE_MS) {
+      logLine("!! MP: timeout esperando respuesta.");
+      client.stop();
+      return false;
+    }
+    delay(10);
+    esp_task_wdt_reset();
+  }
+
+  String statusLine = client.available() ? client.readStringUntil('\n') : "";
+  statusLine.trim();
+
+  bool chunked = false;
+  unsigned long tHeaders0 = millis();
+  while (client.connected() || client.available()) {
+    if (millis() - tHeaders0 > RESPUESTA_DEADLINE_MS) {
+      logLine("!! MP: timeout leyendo headers.");
+      client.stop();
+      return false;
+    }
+    if (!client.available()) { delay(5); continue; }
+    String linea = client.readStringUntil('\n');
+    linea.trim();
+    if (linea.indexOf("Transfer-Encoding: chunked") >= 0) chunked = true;
+    if (linea.length() == 0) break;
+  }
+
+  String body = "";
+  body.reserve(2560);
+  unsigned long tLectura0 = millis();
+  while ((client.connected() || client.available()) &&
+         millis() - tLectura0 < RESPUESTA_DEADLINE_MS) {
+    while (client.available()) {
+      body += (char)client.read();
+    }
+    if (!client.connected() && !client.available()) break;
+  }
+  client.stop();
+
+  if (chunked) {
+    int inicio = body.indexOf('{');
+    int fin = body.lastIndexOf('}');
+    if (inicio >= 0 && fin > inicio) {
+      body = body.substring(inicio, fin + 1);
+    }
+  }
+
+  if (DEBUG_LOG) {
+    logLine("---- MP " + statusLine);
+  }
+
+  // El código de estado HTTP real viene en la statusLine ("HTTP/1.1 200 OK...").
+  // Si no es 200, no tiene sentido intentar parsear el body.
+  if (statusLine.indexOf(" 200 ") < 0) {
+    logLine("!! MP: respuesta no OK (" + statusLine + ").");
     return false;
   }
 
-  String body = http.getString();
-  http.end();
   if (body.length() == 0) return false;
 
   StaticJsonDocument<2048> doc;
@@ -524,7 +587,12 @@ bool consultarMercadoPago() {
   JsonObject pago = results[0];
   long collectorRecibido = pago["collector_id"] | 0L;
   String statusRecibido = pago["status"] | "";
-  String idPago = String((long)(pago["id"] | 0L));
+  // Los ID de pago de MP pueden tener 11-13 dígitos y no entran en un
+  // "long" de 32 bits (máx ~2.1 mil millones) — convertirlos a (long) los
+  // truncaba, lo que podía romper la comparación de deduplicado contra
+  // lastPaymentId. ArduinoJson preserva el valor grande al parsear; sólo
+  // había que evitar el cast y pedirlo directamente como String.
+  String idPago = pago["id"].as<String>();
 
   if (String(collectorRecibido) != cfgMpCollectorId) return false;
   if (statusRecibido != "approved") return false;
@@ -553,7 +621,8 @@ bool backendCheckin(JsonDocument &respuesta) {
   client.setTimeout(CONNECT_TIMEOUT_MS / 1000);
 
   if (!client.connect(BACKEND_HOST, BACKEND_PORT, CONNECT_TIMEOUT_MS)) {
-    logLine("!! checkin: no se pudo conectar al backend.");
+    logLine("!! checkin: no se pudo conectar al backend. RSSI=" + String(WiFi.RSSI()) +
+            " heapLibre=" + String(ESP.getFreeHeap()));
     return false;
   }
 
@@ -657,13 +726,18 @@ void procesarComandos(JsonArray comandos) {
       delay(200);
       ESP.restart();
     } else if (comando == "test_dispense") {
-      // Pulso corto DIRECTO sobre el relé, sin esperar el pulso real de fin
-      // de ciclo — es sólo para probar cableado/relé desde el panel, no un
-      // servido real de café.
-      logLine(">> test_dispense: pulso de prueba de 500ms en GPIO25.");
-      digitalWrite(PIN_RELAY_HABILITA, HIGH);
-      delay(500);
-      digitalWrite(PIN_RELAY_HABILITA, LOW);
+      // "Café gratis" de prueba: arranca EXACTAMENTE el mismo ciclo que
+      // dispara un pago real detectado por Mercado Pago (activarRelay()
+      // deja la botonera habilitada y el loop() espera el pulso real de
+      // fin de ciclo en GPIO27, igual que con un pago de verdad) — sólo
+      // que sin que nadie haya pagado. Así se prueba la habilitación de
+      // la botonera de punta a punta, no sólo que el relé hace clic.
+      if (relayActivo) {
+        logLine("!! test_dispense: ya hay un ciclo en curso, se ignora.");
+      } else {
+        logLine(">> test_dispense: arrancando ciclo de prueba (cafe gratis).");
+        activarRelay();
+      }
     } else if (comando == "clean_cycle") {
       // Limpieza manual pedida desde la app ("🧽 Limpiar ahora"). Si hay un
       // ciclo de servido en curso lo dejamos terminar antes de arrancar.
@@ -671,6 +745,25 @@ void procesarComandos(JsonArray comandos) {
         logLine("!! clean_cycle: hay un ciclo de servido en curso, se ignora por ahora.");
       } else {
         ejecutarCicloDeLimpieza();
+      }
+    } else if (comando.startsWith("dispense:")) {
+      // Esto lo manda el webhook de Mercado Pago (api/mp/webhook/route.ts)
+      // cuando confirma el pago de la orden — es la MISMA detección que ya
+      // usa la garra, y es la que de verdad está probada en producción.
+      // El polling directo a MP desde esta placa (consultarMercadoPago())
+      // se mantiene por la latencia (hasta 10s contra hasta 2min de acá),
+      // pero en la práctica viene devolviendo 200 OK sin encontrar el pago
+      // — probablemente porque la Orders API nueva de MP no deja el mismo
+      // external_reference en el Payment que generó, sólo en la Order. En
+      // vez de depender de eso, usamos este comando como red de seguridad
+      // real: si llega, significa que el webhook SÍ encontró el pago.
+      if (relayActivo) {
+        logLine("!! dispense: ya hay un ciclo en curso, se ignora: " + comando);
+      } else {
+        logLine(">> dispense: pago confirmado por el panel, habilitando botonera.");
+        usedCredits++;
+        guardarUsedCredits();
+        activarRelay();
       }
     } else {
       logLine("!! Comando desconocido, se ignora: " + comando);
@@ -827,6 +920,16 @@ void abrirPortalDeConfiguracion() {
     esp_task_wdt_reset();
     wm.process();
 
+    // Importante: re-chequear la conexión ACÁ, inmediatamente después de
+    // wm.process() y ANTES de evaluar el timeout. Si alguien terminó de
+    // configurar la red justo sobre el límite de los 3 minutos, wm.process()
+    // ya la deja conectada en esta misma vuelta — sin este chequeo, el
+    // timeout se disparaba igual (ESP.restart() sobre un WiFiManager que
+    // acababa de conectar), lo que provocaba un crash
+    // (Guru Meditation Error: LoadProhibited) y reinicio inesperado justo
+    // después de "Connect to new AP [SUCCESS]".
+    if (WiFi.status() == WL_CONNECTED) break;
+
     if (millis() - inicioPortal >= TIMEOUT_SIN_CONFIGURAR_MS) {
       logLine("!! Portal de configuracion: timeout sin que nadie configure. Reiniciando...");
       wm.stopConfigPortal();
@@ -948,11 +1051,6 @@ void setup() {
   bootAt = millis();
   lastWifiOkAt = millis();
 
-  char nombreDispositivo[20];
-  snprintf(nombreDispositivo, sizeof(nombreDispositivo), "QRCAFE-%06lu",
-           (unsigned long)(ESP.getEfuseMac() & 0xFFFFFF));
-  iniciarBLE(String(nombreDispositivo));
-
   hacerCheckin();
 
   esp_task_wdt_reset();
@@ -975,8 +1073,10 @@ void loop() {
       WiFi.reconnect();
     }
   } else {
-    if (millis() - lastCheckinAt >= CHECKIN_INTERVAL_MS) {
+    if (millis() - lastCheckinAt >= CHECKIN_INTERVAL_MS &&
+        millis() - lastRedOpMs >= MIN_GAP_ENTRE_OPS_RED_MS) {
       lastCheckinAt = millis();
+      lastRedOpMs = lastCheckinAt;
       hacerCheckin();
     }
   }
@@ -1005,8 +1105,10 @@ void loop() {
     }
   } else if (puedeOperar) {
     unsigned long ahora = millis();
-    if (ahora - lastMpCheckMs >= MP_CHECK_INTERVAL_MS) {
+    if (ahora - lastMpCheckMs >= MP_CHECK_INTERVAL_MS &&
+        ahora - lastRedOpMs >= MIN_GAP_ENTRE_OPS_RED_MS) {
       lastMpCheckMs = ahora;
+      lastRedOpMs = ahora;
       if (consultarMercadoPago()) {
         activarRelay();
       }
