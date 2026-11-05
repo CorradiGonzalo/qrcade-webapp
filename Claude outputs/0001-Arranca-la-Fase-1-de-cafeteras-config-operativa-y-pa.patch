@@ -1,0 +1,833 @@
+From 7d16dd0bd5b7e0c3ca20913737d6cdece509f127 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 23 Oct 2026 03:11:11 +0000
+Subject: [PATCH] Arranca la Fase 1 de cafeteras: config operativa y pagos
+ desde la app
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Backend: nuevas columnas devices.cafe_* (pulso, delay, limpieza,
+calentador, comando de reset BT y external_reference autogenerado desde
+la MAC) y el check-in le manda esto a una placa kind='cafetera' junto
+con el Access Token/collector_id de MP de su dueño — reusado de
+profiles, la misma cuenta que ya cargan para las garras, cero
+credenciales nuevas por placa.
+
+App: panel de configuración de la cafetera en /dashboard/maquinas/[id]
+(reemplaza el panel de QR/cobro, que es específico de garra), con botón
+de "Limpiar ahora" (nuevo comando clean_cycle, mismo mecanismo que
+test/restart) además de los campos de config.
+
+Lo que NO cambia todavía: el firmware de las cafeteras sigue siendo el
+original — esto es sólo la mitad del backend+app. Falta escribir el
+firmware nuevo (portal cautivo sólo WiFi, resto por check-in) y
+probarlo en la placa de repuesto antes de tocar ninguna de las 21 en
+producción.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_015zajVaRwuvffvFy7SmNyGd
+---
+ src/app/api/device/checkin/route.ts           |  10 +
+ src/app/dashboard/maquinas/[id]/page.tsx      |  40 ++-
+ .../dashboard/CafeteraConfigForm.tsx          | 256 ++++++++++++++++++
+ src/lib/actions/devices.ts                    | 126 +++++++++
+ src/lib/supabase/types.ts                     |  14 +-
+ supabase/migrations/0011_cafetera_config.sql  |  46 ++++
+ .../0012_checkin_cafetera_config.sql          | 138 ++++++++++
+ .../migrations/0013_clean_cycle_command.sql   |  13 +
+ 8 files changed, 635 insertions(+), 8 deletions(-)
+ create mode 100644 src/components/dashboard/CafeteraConfigForm.tsx
+ create mode 100644 supabase/migrations/0011_cafetera_config.sql
+ create mode 100644 supabase/migrations/0012_checkin_cafetera_config.sql
+ create mode 100644 supabase/migrations/0013_clean_cycle_command.sql
+
+diff --git a/src/app/api/device/checkin/route.ts b/src/app/api/device/checkin/route.ts
+index f16abdb..8aa2d83 100644
+--- a/src/app/api/device/checkin/route.ts
++++ b/src/app/api/device/checkin/route.ts
+@@ -179,6 +179,15 @@ export async function POST(request: Request) {
+   const combos: { monto: number; fichas: number }[] | null =
+     touchRow?.combos ?? null;
+ 
++  // Sólo para kind='cafetera': config operativa (pulso/delay/limpieza/
++  // calentador) + Access Token y collector_id de la cuenta de MP del
++  // dueño (reusados de profiles, no hace falta cargarlos de nuevo por
++  // placa). La ESP lo cachea en su NVS — ver cargarConfiguracionRemota()
++  // en el firmware. No se envía token "solo una vez": va en cada
++  // check-in, así un cambio hecho en el panel (ej. rotar el token, bajar
++  // el delay) se aplica solo en el próximo check-in sin tocar la placa.
++  const cafeConfig = touchRow?.cafe_config ?? null;
++
+   return NextResponse.json({
+     status: "claimed",
+     is_paused: device.is_paused,
+@@ -197,6 +206,7 @@ export async function POST(request: Request) {
+     // La ESP la descarga con HTTPUpdate y se reinicia sola si sale bien —
+     // ver ejecutarActualizacionFirmware() en el .ino.
+     ...(firmwareUpdate ? { firmware_update: firmwareUpdate } : {}),
++    ...(cafeConfig ? { cafe_config: cafeConfig } : {}),
+   });
+ }
+ 
+diff --git a/src/app/dashboard/maquinas/[id]/page.tsx b/src/app/dashboard/maquinas/[id]/page.tsx
+index d63c904..9949062 100644
+--- a/src/app/dashboard/maquinas/[id]/page.tsx
++++ b/src/app/dashboard/maquinas/[id]/page.tsx
+@@ -2,12 +2,18 @@ import Link from "next/link";
+ import { notFound } from "next/navigation";
+ import QRCode from "qrcode";
+ import { requireActiveUser } from "@/lib/supabase/auth";
++import { CafeteraConfigForm } from "@/components/dashboard/CafeteraConfigForm";
+ import { DeviceActions } from "@/components/dashboard/DeviceActions";
+ import { DeviceNameEditor } from "@/components/dashboard/DeviceNameEditor";
+ import { FirmwareBanner } from "@/components/dashboard/FirmwareBanner";
+ import { SalesPeriodFilter } from "@/components/dashboard/SalesPeriodFilter";
+ import { resolverRangoFechas } from "@/lib/sales-period";
+-import type { Device, DeviceEvent, FirmwareVersion } from "@/lib/supabase/types";
++import type {
++  Device,
++  DeviceEvent,
++  FirmwareVersion,
++  Profile,
++} from "@/lib/supabase/types";
+ 
+ /** Tope de filas que se traen de mp_payments por período — de sobra para
+  * el volumen de una máquina individual; evita una query sin fin si
+@@ -22,6 +28,7 @@ const EVENT_LABELS: Record<DeviceEvent["type"], string> = {
+   dispense_payment: "💸 Pago",
+   restart_requested: "⟲ Reinicio",
+   firmware_update: "🆕 Firmware",
++  clean_cycle: "🧽 Limpieza",
+ };
+ 
+ export default async function DeviceDetailPage(
+@@ -58,6 +65,17 @@ export default async function DeviceDetailPage(
+   }
+ 
+   const hasQrConfig = Boolean(device.qr_data);
++  const esCafetera = device.kind === "cafetera";
++
++  let hasAccountToken = false;
++  if (esCafetera) {
++    const { data: profile } = await supabase
++      .from("profiles")
++      .select("mp_access_token")
++      .eq("id", user.id)
++      .single<Pick<Profile, "mp_access_token">>();
++    hasAccountToken = Boolean(profile?.mp_access_token);
++  }
+ 
+   const periodoParam = typeof sp.periodo === "string" ? sp.periodo : undefined;
+   const desdeParam = typeof sp.desde === "string" ? sp.desde : undefined;
+@@ -113,12 +131,14 @@ export default async function DeviceDetailPage(
+           </div>
+         </div>
+         <div className="flex flex-wrap items-center gap-2.5">
+-          <Link
+-            href={`/dashboard/maquinas/${device.id}/cobro`}
+-            className="rounded-[9px] border border-line-soft bg-surface-2 px-4 py-2.5 text-[13px] font-semibold text-ink"
+-          >
+-            ⚙ Configurar cobro
+-          </Link>
++          {!esCafetera && (
++            <Link
++              href={`/dashboard/maquinas/${device.id}/cobro`}
++              className="rounded-[9px] border border-line-soft bg-surface-2 px-4 py-2.5 text-[13px] font-semibold text-ink"
++            >
++              ⚙ Configurar cobro
++            </Link>
++          )}
+           <DeviceActions device={device} />
+         </div>
+       </div>
+@@ -166,6 +186,7 @@ export default async function DeviceDetailPage(
+             </div>
+           </div>
+ 
++          {!esCafetera && (
+           <div className="rounded-2xl border border-line bg-surface p-[22px]">
+             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+               <div className="text-sm font-bold">Ventas</div>
+@@ -231,6 +252,7 @@ export default async function DeviceDetailPage(
+               </>
+             )}
+           </div>
++          )}
+ 
+           <div className="mt-4 rounded-2xl border border-line bg-surface p-[22px]">
+             <div className="mb-3 text-sm font-bold">Actividad</div>
+@@ -262,6 +284,9 @@ export default async function DeviceDetailPage(
+         </div>
+ 
+         <div>
++          {esCafetera ? (
++            <CafeteraConfigForm device={device} hasAccountToken={hasAccountToken} />
++          ) : (
+           <div className="rounded-2xl border border-line bg-surface p-6 text-center">
+             <div className="mb-4 text-left text-sm font-bold">
+               Código QR activo
+@@ -306,6 +331,7 @@ export default async function DeviceDetailPage(
+               </div>
+             )}
+           </div>
++          )}
+ 
+           <div className="mt-4 rounded-2xl border border-line bg-surface p-5">
+             <div className="mb-3 text-sm font-bold">Info del equipo</div>
+diff --git a/src/components/dashboard/CafeteraConfigForm.tsx b/src/components/dashboard/CafeteraConfigForm.tsx
+new file mode 100644
+index 0000000..81939ce
+--- /dev/null
++++ b/src/components/dashboard/CafeteraConfigForm.tsx
+@@ -0,0 +1,256 @@
++"use client";
++
++import { useActionState, useState, useTransition } from "react";
++import {
++  requestCleanCycleAction,
++  saveCafeteraConfigAction,
++} from "@/lib/actions/devices";
++import type { Device } from "@/lib/supabase/types";
++
++/**
++ * Config operativa de una cafetera (ver migración 0011) — todo lo que
++ * el firmware "ESP32 MPAY" original pedía a mano por el portal cautivo,
++ * salvo el Access Token/collector_id de MP (esos se cargan una sola vez
++ * en "Mi cuenta" y se reusan para todas las máquinas) y el WiFi (eso sí
++ * sigue siendo directo desde la placa, no hay forma de evitarlo en el
++ * primer alta).
++ */
++export function CafeteraConfigForm({
++  device,
++  hasAccountToken,
++}: {
++  device: Device;
++  hasAccountToken: boolean;
++}) {
++  const [state, formAction, pending] = useActionState(
++    saveCafeteraConfigAction,
++    undefined
++  );
++  const [pulsoAlto, setPulsoAlto] = useState(device.cafe_pulso_nivel_high);
++  const [limpiezaPendiente, startLimpieza] = useTransition();
++  const [limpiezaOk, setLimpiezaOk] = useState(false);
++
++  function dispararLimpieza() {
++    startLimpieza(async () => {
++      await requestCleanCycleAction(device.id);
++      setLimpiezaOk(true);
++      setTimeout(() => setLimpiezaOk(false), 4000);
++    });
++  }
++
++  return (
++    <div className="space-y-5">
++      {!hasAccountToken && (
++        <div className="rounded-lg border border-warn bg-warn-bg px-4 py-4 text-xs text-warn">
++          ⚠ Todavía no cargaste el Access Token de tu cuenta en{" "}
++          <a href="/dashboard/cuenta" className="font-semibold underline">
++            Mi cuenta
++          </a>
++          . Esta cafetera no va a poder detectar pagos hasta que lo cargues
++          — es la misma cuenta que usan las garras.
++        </div>
++      )}
++
++      <div className="rounded-2xl border border-line bg-surface p-6">
++        <div className="mb-1 text-sm font-bold">Identificador de pago (MP)</div>
++        <p className="mb-3 text-xs text-ink-muted">
++          Esto es lo que distingue los pagos de ESTA cafetera de los de
++          otra máquina de la misma cuenta. Se generó solo a partir de la
++          MAC — si esta placa venía con el firmware viejo y ya tenía
++          pagos andando con otro external_reference, hay que actualizar
++          la config de cobro de Mercado Pago de esta máquina puntual para
++          que apunte a este valor.
++        </p>
++        <div className="flex items-center gap-2 rounded-lg border border-line-soft bg-surface-2 px-3.5 py-3">
++          <code className="flex-1 overflow-x-auto text-xs font-semibold text-ink">
++            {device.cafe_mp_external_reference}
++          </code>
++        </div>
++      </div>
++
++      <div className="rounded-2xl border border-line bg-surface p-6">
++        <div className="mb-1 text-sm font-bold">Limpieza</div>
++        <p className="mb-4 text-xs text-ink-muted">
++          2 pulsos de relé separados por 20s. Se dispara sola cada tantos
++          créditos usados, o la podés pedir ahora mismo.
++        </p>
++
++        <form action={formAction} className="space-y-4">
++          <input type="hidden" name="device_id" value={device.id} />
++          <input
++            type="hidden"
++            name="cafe_pulso_nivel_high"
++            value={pulsoAlto ? "on" : "off"}
++          />
++
++          <div>
++            <label className="mb-1.5 block text-xs font-semibold text-ink-muted">
++              Limpiar cada X ciclos
++            </label>
++            <input
++              name="cafe_clean_every_n_cycles"
++              type="number"
++              min="1"
++              step="1"
++              defaultValue={device.cafe_clean_every_n_cycles}
++              className="w-full rounded-lg border border-line-soft bg-surface-2 px-3.5 py-3 text-sm text-ink outline-none focus:border-brand"
++            />
++          </div>
++
++          <div>
++            <label className="mb-1.5 block text-xs font-semibold text-ink-muted">
++              Duración de cada pulso de limpieza (ms)
++            </label>
++            <input
++              name="cafe_clean_pulse_ms"
++              type="number"
++              min="100"
++              step="1"
++              defaultValue={device.cafe_clean_pulse_ms}
++              className="w-full rounded-lg border border-line-soft bg-surface-2 px-3.5 py-3 text-sm text-ink outline-none focus:border-brand"
++            />
++          </div>
++
++          <details className="rounded-lg border border-line-soft bg-surface-2 px-3.5 py-3">
++            <summary className="cursor-pointer text-xs font-semibold text-ink-muted">
++              Avanzado (pulso / relé / calentador / reset BT)
++            </summary>
++            <div className="mt-3.5 space-y-4">
++              <div>
++                <label className="mb-1.5 block text-xs font-semibold text-ink-muted">
++                  Pulso mínimo en GPIO27 (µs)
++                </label>
++                <input
++                  name="cafe_pulso_min_us"
++                  type="number"
++                  min="1000"
++                  step="1"
++                  defaultValue={device.cafe_pulso_min_us}
++                  className="w-full rounded-lg border border-line bg-surface px-3.5 py-2.5 text-sm text-ink outline-none focus:border-brand"
++                />
++              </div>
++
++              <div className="flex gap-2">
++                <button
++                  type="button"
++                  onClick={() => setPulsoAlto(true)}
++                  className={`flex-1 rounded-lg border px-3 py-2 text-xs font-semibold transition ${
++                    pulsoAlto
++                      ? "border-brand bg-brand-soft text-ink"
++                      : "border-line-soft bg-surface text-ink-muted"
++                  }`}
++                >
++                  Pulso activo HIGH
++                </button>
++                <button
++                  type="button"
++                  onClick={() => setPulsoAlto(false)}
++                  className={`flex-1 rounded-lg border px-3 py-2 text-xs font-semibold transition ${
++                    !pulsoAlto
++                      ? "border-brand bg-brand-soft text-ink"
++                      : "border-line-soft bg-surface text-ink-muted"
++                  }`}
++                >
++                  Pulso activo LOW
++                </button>
++              </div>
++
++              <div>
++                <label className="mb-1.5 block text-xs font-semibold text-ink-muted">
++                  Retardo de apagado del relé tras fin de ciclo (ms)
++                </label>
++                <input
++                  name="cafe_off_delay_ms"
++                  type="number"
++                  min="0"
++                  step="1"
++                  defaultValue={device.cafe_off_delay_ms}
++                  className="w-full rounded-lg border border-line bg-surface px-3.5 py-2.5 text-sm text-ink outline-none focus:border-brand"
++                />
++              </div>
++
++              <div className="grid grid-cols-2 gap-3">
++                <div>
++                  <label className="mb-1.5 block text-xs font-semibold text-ink-muted">
++                    Calentador activo (min)
++                  </label>
++                  <input
++                    name="cafe_heat_on_min"
++                    type="number"
++                    min="1"
++                    step="1"
++                    defaultValue={device.cafe_heat_on_min}
++                    className="w-full rounded-lg border border-line bg-surface px-3.5 py-2.5 text-sm text-ink outline-none focus:border-brand"
++                  />
++                </div>
++                <div>
++                  <label className="mb-1.5 block text-xs font-semibold text-ink-muted">
++                    Calentador apagado (min)
++                  </label>
++                  <input
++                    name="cafe_heat_off_min"
++                    type="number"
++                    min="1"
++                    step="1"
++                    defaultValue={device.cafe_heat_off_min}
++                    className="w-full rounded-lg border border-line bg-surface px-3.5 py-2.5 text-sm text-ink outline-none focus:border-brand"
++                  />
++                </div>
++              </div>
++
++              <div>
++                <label className="mb-1.5 block text-xs font-semibold text-ink-muted">
++                  Comando de reset remoto por BLE
++                </label>
++                <input
++                  name="cafe_bt_reset_cmd"
++                  maxLength={40}
++                  defaultValue={device.cafe_bt_reset_cmd}
++                  className="w-full rounded-lg border border-line bg-surface px-3.5 py-2.5 text-sm text-ink outline-none focus:border-brand"
++                />
++              </div>
++            </div>
++          </details>
++
++          {state?.error && (
++            <p className="text-xs font-medium text-danger">{state.error}</p>
++          )}
++          {state?.ok && (
++            <p className="text-xs font-medium text-ok">
++              Guardado ✓ — se aplica en el próximo check-in de la placa.
++            </p>
++          )}
++
++          <button
++            type="submit"
++            disabled={pending}
++            className="w-full rounded-lg bg-brand py-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
++          >
++            {pending ? "Guardando…" : "Guardar cambios"}
++          </button>
++        </form>
++
++        <div className="mt-4 flex items-center gap-2.5 border-t border-line-soft pt-4">
++          <button
++            type="button"
++            disabled={limpiezaPendiente}
++            onClick={dispararLimpieza}
++            className="rounded-[9px] border border-line-soft bg-surface-2 px-4 py-2.5 text-[13px] font-semibold text-ink disabled:opacity-50"
++          >
++            🧽 Limpiar ahora
++          </button>
++          {limpiezaOk && (
++            <span className="text-[11px] text-ok">
++              ✓ Enviado — se ejecuta en el próximo check-in de la placa
++            </span>
++          )}
++        </div>
++      </div>
++
++      <div className="rounded-lg border border-info-line bg-info-bg px-4 py-4 text-xs text-info">
++        💡 La red WiFi de la máquina se configura directo desde la placa
++        (red &quot;QRcade_Config&quot;). Todo lo demás es desde acá.
++      </div>
++    </div>
++  );
++}
+diff --git a/src/lib/actions/devices.ts b/src/lib/actions/devices.ts
+index c3a0322..8d147e7 100644
+--- a/src/lib/actions/devices.ts
++++ b/src/lib/actions/devices.ts
+@@ -167,6 +167,93 @@ export async function saveDeviceBillingAction(
+   return { ok: true };
+ }
+ 
++// =====================================================================
++//           CONFIG OPERATIVA DE CAFETERA (kind='cafetera')
++// =====================================================================
++export type SaveCafeteraConfigState = { error?: string; ok?: boolean } | undefined;
++
++/**
++ * Guarda la config operativa de una cafetera (pulso/delay/limpieza/
++ * calentador/comando de reset BT — ver migración 0011). El Access Token
++ * y collector_id de MP NO se tocan acá: se leen de profiles al momento
++ * del check-in (ver touch_device_checkin), se cargan una sola vez en
++ * "Mi cuenta" y valen para todas las máquinas del dueño.
++ */
++export async function saveCafeteraConfigAction(
++  _prevState: SaveCafeteraConfigState,
++  formData: FormData
++): Promise<SaveCafeteraConfigState> {
++  const { supabase, userId } = await ownedSupabase();
++
++  const deviceId = String(formData.get("device_id") || "");
++  if (!deviceId) return { error: "Falta la máquina." };
++
++  const num = (campo: string, min: number, max: number, etiqueta: string) => {
++    const raw = String(formData.get(campo) || "").trim();
++    const val = Number(raw);
++    if (!raw || Number.isNaN(val) || val < min || val > max) {
++      throw new Error(`${etiqueta} tiene que ser un número entre ${min} y ${max}.`);
++    }
++    return Math.round(val);
++  };
++
++  let pulsoMinUs: number,
++    offDelayMs: number,
++    cleanPulseMs: number,
++    heatOnMin: number,
++    heatOffMin: number,
++    cleanEveryNCycles: number;
++
++  try {
++    pulsoMinUs = num("cafe_pulso_min_us", 1000, 2_000_000, "El pulso mínimo");
++    offDelayMs = num("cafe_off_delay_ms", 0, 60_000, "El retardo de apagado");
++    cleanPulseMs = num("cafe_clean_pulse_ms", 100, 60_000, "El pulso de limpieza");
++    heatOnMin = num("cafe_heat_on_min", 1, 240, "El tiempo de calentador activo");
++    heatOffMin = num("cafe_heat_off_min", 1, 240, "El tiempo de calentador apagado");
++    cleanEveryNCycles = num("cafe_clean_every_n_cycles", 1, 10_000, "La cantidad de ciclos entre limpiezas");
++  } catch (err) {
++    return { error: err instanceof Error ? err.message : "Datos inválidos." };
++  }
++
++  const btResetCmd = String(formData.get("cafe_bt_reset_cmd") || "").trim();
++  if (!btResetCmd || btResetCmd.length > 40) {
++    return { error: "El comando de reset BT tiene que tener entre 1 y 40 caracteres." };
++  }
++
++  const pulsoNivelHigh = formData.get("cafe_pulso_nivel_high") === "on";
++
++  const { data: device } = await supabase
++    .from("devices")
++    .select("id, kind")
++    .eq("id", deviceId)
++    .eq("owner_id", userId)
++    .single<Pick<Device, "id" | "kind">>();
++
++  if (!device) return { error: "No se encontró la máquina." };
++  if (device.kind !== "cafetera") {
++    return { error: "Esta máquina no es una cafetera." };
++  }
++
++  const { error } = await supabase
++    .from("devices")
++    .update({
++      cafe_pulso_min_us: pulsoMinUs,
++      cafe_off_delay_ms: offDelayMs,
++      cafe_clean_pulse_ms: cleanPulseMs,
++      cafe_heat_on_min: heatOnMin,
++      cafe_heat_off_min: heatOffMin,
++      cafe_clean_every_n_cycles: cleanEveryNCycles,
++      cafe_bt_reset_cmd: btResetCmd,
++      cafe_pulso_nivel_high: pulsoNivelHigh,
++    })
++    .eq("id", deviceId);
++
++  if (error) return { error: "No se pudo guardar. Probá de nuevo." };
++
++  revalidatePath(`/dashboard/maquinas/${deviceId}`);
++  return { ok: true };
++}
++
+ // =====================================================================
+ //                    COMBOS DE FICHAS (modo "combo")
+ // =====================================================================
+@@ -286,6 +373,45 @@ export async function requestTestDispenseAction(deviceId: string) {
+   revalidatePath(`/dashboard/maquinas/${deviceId}`);
+ }
+ 
++/**
++ * Sólo para cafeteras: dispara el ciclo de limpieza (2 pulsos de GPIO25
++ * separados por 20s, exactamente la misma función que ya usa el
++ * firmware cuando se alcanza cafe_clean_every_n_cycles solo) a demanda,
++ * sin esperar a que se cumplan los ciclos. Reusa device_commands, igual
++ * que test/restart.
++ */
++export async function requestCleanCycleAction(deviceId: string) {
++  const { supabase, userId } = await ownedSupabase();
++
++  const { data: device } = await supabase
++    .from("devices")
++    .select("id, kind")
++    .eq("id", deviceId)
++    .eq("owner_id", userId)
++    .single<Pick<Device, "id" | "kind">>();
++
++  if (!device) throw new Error("No se encontró la máquina.");
++  if (device.kind !== "cafetera") {
++    throw new Error("La limpieza manual sólo existe para cafeteras.");
++  }
++
++  const { error } = await supabase.from("device_commands").insert({
++    device_id: deviceId,
++    command: "clean_cycle",
++    created_by: userId,
++  });
++  if (error) throw new Error(error.message);
++
++  await logDeviceEvent(
++    createAdminClient(),
++    deviceId,
++    "clean_cycle",
++    "Limpieza disparada a mano desde el panel."
++  );
++
++  revalidatePath(`/dashboard/maquinas/${deviceId}`);
++}
++
+ export async function respondFirmwareAction(
+   deviceId: string,
+   firmwareVersionId: string,
+diff --git a/src/lib/supabase/types.ts b/src/lib/supabase/types.ts
+index 826b8c7..cac37ef 100644
+--- a/src/lib/supabase/types.ts
++++ b/src/lib/supabase/types.ts
+@@ -47,6 +47,17 @@ export interface Device {
+   provisioned_at: string | null;
+   kind: DeviceKind;
+   folder_id: string | null;
++  // Config propia de kind='cafetera' — ver migración 0011. En una
++  // 'garra' quedan en sus valores default, sin uso.
++  cafe_mp_external_reference: string | null;
++  cafe_pulso_min_us: number;
++  cafe_off_delay_ms: number;
++  cafe_clean_pulse_ms: number;
++  cafe_heat_on_min: number;
++  cafe_heat_off_min: number;
++  cafe_clean_every_n_cycles: number;
++  cafe_bt_reset_cmd: string;
++  cafe_pulso_nivel_high: boolean;
+   created_at: string;
+   claimed_at: string | null;
+   revoked_at: string | null;
+@@ -90,7 +101,8 @@ export type DeviceEventType =
+   | "dispense_test"
+   | "dispense_payment"
+   | "restart_requested"
+-  | "firmware_update";
++  | "firmware_update"
++  | "clean_cycle";
+ 
+ export interface DeviceEvent {
+   id: string;
+diff --git a/supabase/migrations/0011_cafetera_config.sql b/supabase/migrations/0011_cafetera_config.sql
+new file mode 100644
+index 0000000..05b09ee
+--- /dev/null
++++ b/supabase/migrations/0011_cafetera_config.sql
+@@ -0,0 +1,46 @@
++-- QRcade — Config operativa de las cafeteras, manejada desde la app
++-- ─────────────────────────────────────────────────────────────
++-- El firmware original "ESP32 MPAY" cargaba TODO esto (incluido el
++-- Access Token de Mercado Pago) a mano, por placa, desde el portal
++-- cautivo de WiFiManager — 21 placas, 21 veces tipeando lo mismo a mano,
++-- sin poder tocar nada después sin ir físicamente hasta la máquina.
++--
++-- El firmware nuevo (kind='cafetera') sólo usa el portal cautivo para el
++-- WiFi. Todo lo demás se configura acá y se lo lleva el propio check-in
++-- (ver migración 0012 / resolverFirmwareUpdate en route.ts) — la placa
++-- lo cachea en su NVS, así que si el backend está caído sigue
++-- funcionando con el último valor que tenía.
++--
++-- El Access Token y el collector_id NO se guardan por placa: se
++-- REUSAN de profiles.mp_access_token / mp_user_id, la misma cuenta de MP
++-- que ya carga el dueño en "Mi cuenta" para las garras — una cafetera
++-- más no pide cargar nada de MP de nuevo.
++--
++-- mp_external_reference SÍ es por placa (es lo que distingue los pagos
++-- de una cafetera de los de otra dentro de la misma cuenta de MP) — se
++-- genera solo, determinístico a partir de la MAC, para no depender de
++-- que alguien lo tipee bien. OJO: para una placa que ya tenía pagos
++-- funcionando con el firmware viejo (un external_reference tipeado a
++-- mano, distinto), hay que recargar ese valor en la config de cobro de
++-- Mercado Pago de esa cafetera puntual para que siga matcheando.
++alter table public.devices
++  add column if not exists cafe_mp_external_reference text
++    generated always as ('CAFE' || regexp_replace(upper(mac), '[^A-Z0-9]', '', 'g')) stored,
++  add column if not exists cafe_pulso_min_us integer not null default 50000,
++  add column if not exists cafe_off_delay_ms integer not null default 500,
++  add column if not exists cafe_clean_pulse_ms integer not null default 3000,
++  add column if not exists cafe_heat_on_min integer not null default 20,
++  add column if not exists cafe_heat_off_min integer not null default 5,
++  add column if not exists cafe_clean_every_n_cycles integer not null default 50,
++  add column if not exists cafe_bt_reset_cmd text not null default 'RESET847200',
++  add column if not exists cafe_pulso_nivel_high boolean not null default true;
++
++comment on column public.devices.cafe_mp_external_reference is 'external_reference que esta cafetera usa para que MP distinga sus pagos de los de otra máquina de la misma cuenta. Generado solo a partir de la MAC — ver comentario de la migración.';
++comment on column public.devices.cafe_pulso_min_us is 'Duración mínima válida (µs) del pulso de "fin de ciclo" en GPIO27. Equivalente a pulseus del firmware original.';
++comment on column public.devices.cafe_off_delay_ms is 'Delay (ms) antes de apagar el relé de habilitación (GPIO25) tras el fin de ciclo. Equivalente a offdly.';
++comment on column public.devices.cafe_clean_pulse_ms is 'Duración (ms) de cada uno de los 2 pulsos del ciclo de limpieza automática. Equivalente a cleanpms.';
++comment on column public.devices.cafe_heat_on_min is 'Minutos que el calentador permanece encendido por ciclo. Equivalente a heaton.';
++comment on column public.devices.cafe_heat_off_min is 'Minutos que el calentador permanece apagado por ciclo. Equivalente a heatoff.';
++comment on column public.devices.cafe_clean_every_n_cycles is 'Cada cuántos créditos usados se dispara la limpieza automática. Equivalente a clncyc.';
++comment on column public.devices.cafe_bt_reset_cmd is 'Texto que hay que mandar por BLE (Nordic UART Service) para autorizar un reset de fábrica remoto. Equivalente a btrstcmd.';
++comment on column public.devices.cafe_pulso_nivel_high is 'Nivel activo esperado del pulso de entrada en GPIO27 (true=HIGH, false=LOW). Equivalente a pulslvl.';
+diff --git a/supabase/migrations/0012_checkin_cafetera_config.sql b/supabase/migrations/0012_checkin_cafetera_config.sql
+new file mode 100644
+index 0000000..d2c0fc8
+--- /dev/null
++++ b/supabase/migrations/0012_checkin_cafetera_config.sql
+@@ -0,0 +1,138 @@
++-- QRcade — El check-in también le manda su config a una cafetera
++-- ─────────────────────────────────────────────────────────────
++-- Mismo mecanismo que ya usan comandos/combos/firmware (migración 0010):
++-- en el mismo viaje del check-in, si la placa es kind='cafetera' y está
++-- claimed, le mandamos también su config operativa (ver migración 0011)
++-- más el Access Token y collector_id de SU DUEÑO (reusado de
++-- profiles.mp_access_token/mp_user_id — la misma cuenta que ya carga
++-- para las garras, no hace falta cargar nada de MP de nuevo). La placa
++-- cachea esto en su NVS — si el backend está caído sigue con el último
++-- valor bueno que tenía.
++drop function if exists public.touch_device_checkin(text, text, integer);
++
++create function public.touch_device_checkin(
++  p_mac text,
++  p_firmware_version text,
++  p_wifi_rssi integer
++)
++returns table (
++  device public.devices,
++  previous_last_seen_at timestamptz,
++  pending_commands jsonb,
++  combos jsonb,
++  firmware_pending jsonb,
++  cafe_config jsonb
++)
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v_previous timestamptz;
++  v_device public.devices;
++  v_commands jsonb;
++  v_combos jsonb;
++  v_firmware jsonb;
++  v_cafe jsonb;
++begin
++  select d.last_seen_at into v_previous
++  from public.devices d
++  where d.mac = p_mac;
++
++  if not found then
++    return;
++  end if;
++
++  update public.devices
++  set last_seen_at = now(),
++      firmware_version = p_firmware_version,
++      wifi_rssi = p_wifi_rssi
++  where mac = p_mac
++  returning public.devices.* into v_device;
++
++  if v_device.status = 'claimed' then
++    with acked as (
++      update public.device_commands
++      set acknowledged_at = now()
++      where device_id = v_device.id
++        and acknowledged_at is null
++      returning id, command, created_at
++    )
++    select coalesce(
++      jsonb_agg(jsonb_build_object('id', id, 'command', command) order by created_at),
++      '[]'::jsonb
++    )
++    into v_commands
++    from acked;
++
++    if v_device.mode = 'combo' then
++      select coalesce(
++        jsonb_agg(jsonb_build_object('monto', monto, 'fichas', fichas) order by monto),
++        '[]'::jsonb
++      )
++      into v_combos
++      from public.device_ficha_combos
++      where device_id = v_device.id;
++    else
++      v_combos := null;
++    end if;
++
++    select jsonb_build_object(
++      'status', dfs.status,
++      'updated_at', dfs.updated_at,
++      'firmware_version_id', dfs.firmware_version_id,
++      'version', fv.version,
++      'bin_url', fv.bin_url,
++      'changelog', fv.changelog,
++      'kind', fv.kind
++    )
++    into v_firmware
++    from public.device_firmware_status dfs
++    join public.firmware_versions fv on fv.id = dfs.firmware_version_id
++    where dfs.device_id = v_device.id
++      and dfs.status in ('accepted', 'downloading')
++    order by dfs.updated_at desc
++    limit 1;
++
++    if v_device.kind = 'cafetera' then
++      select jsonb_build_object(
++        'mp_access_token', p.mp_access_token,
++        'mp_collector_id', p.mp_user_id,
++        'mp_external_reference', v_device.cafe_mp_external_reference,
++        'pulso_min_us', v_device.cafe_pulso_min_us,
++        'off_delay_ms', v_device.cafe_off_delay_ms,
++        'clean_pulse_ms', v_device.cafe_clean_pulse_ms,
++        'heat_on_min', v_device.cafe_heat_on_min,
++        'heat_off_min', v_device.cafe_heat_off_min,
++        'clean_every_n_cycles', v_device.cafe_clean_every_n_cycles,
++        'bt_reset_cmd', v_device.cafe_bt_reset_cmd,
++        'pulso_nivel_high', v_device.cafe_pulso_nivel_high
++      )
++      into v_cafe
++      from public.profiles p
++      where p.id = v_device.owner_id;
++    else
++      v_cafe := null;
++    end if;
++  else
++    v_commands := '[]'::jsonb;
++    v_combos := null;
++    v_firmware := null;
++    v_cafe := null;
++  end if;
++
++  device := v_device;
++  previous_last_seen_at := v_previous;
++  pending_commands := v_commands;
++  combos := v_combos;
++  firmware_pending := v_firmware;
++  cafe_config := v_cafe;
++  return next;
++end;
++$$;
++
++comment on function public.touch_device_checkin(text, text, integer) is
++  'Check-in completo de una placa EXISTENTE en un solo viaje: actualiza last_seen_at/firmware_version/wifi_rssi, reconoce comandos pendientes, y trae combos + firmware pendiente + (si es cafetera) su config operativa y credenciales de MP de su dueño. No hace nada si la MAC no existe (la placa es nueva).';
++
++revoke all on function public.touch_device_checkin(text, text, integer) from public, anon, authenticated;
++grant execute on function public.touch_device_checkin(text, text, integer) to service_role;
+diff --git a/supabase/migrations/0013_clean_cycle_command.sql b/supabase/migrations/0013_clean_cycle_command.sql
+new file mode 100644
+index 0000000..c4d4580
+--- /dev/null
++++ b/supabase/migrations/0013_clean_cycle_command.sql
+@@ -0,0 +1,13 @@
++-- QRcade — Botón de "limpieza manual" para cafeteras
++-- ─────────────────────────────────────────────────────────────
++-- El firmware original de la cafetera dispara el ciclo de limpieza solo
++-- (2 pulsos de GPIO25 separados por 20s) cada N créditos usados. El
++-- dueño pidió poder dispararlo también a mano desde el panel — mismo
++-- mecanismo que "Test" y "Reiniciar" (device_commands + check-in), sólo
++-- hace falta sumar el tipo de evento para loguearlo.
++alter table public.device_events
++  drop constraint if exists device_events_type_check;
++
++alter table public.device_events
++  add constraint device_events_type_check
++  check (type in ('wifi_reconnect', 'dispense_test', 'dispense_payment', 'restart_requested', 'firmware_update', 'clean_cycle'));
+-- 
+2.43.0
+
