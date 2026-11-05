@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireActiveUser } from "@/lib/supabase/auth";
 import { DeviceBillingForm } from "@/components/dashboard/DeviceBillingForm";
+import { DeviceEmployeeQrForm } from "@/components/dashboard/DeviceEmployeeQrForm";
 import type { Device, DeviceFichaCombo, Profile } from "@/lib/supabase/types";
 
 export default async function CobroPage(
@@ -55,6 +56,12 @@ export default async function CobroPage(
         combos={combos ?? []}
         hasAccountToken={Boolean(profile?.mp_access_token)}
       />
+
+      {device.kind === "cafetera" && (
+        <div className="mt-5">
+          <DeviceEmployeeQrForm device={device} />
+        </div>
+      )}
     </div>
   );
 }

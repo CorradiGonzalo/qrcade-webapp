@@ -168,7 +168,8 @@ function FolderTile({
 
       <button
         onClick={() => setMenuOpen((v) => !v)}
-        className="absolute right-2 top-2 rounded-md p-1 text-ink-faint opacity-0 transition hover:bg-surface-2 hover:text-ink group-hover:opacity-100"
+        aria-label="Opciones de la carpeta"
+        className="absolute right-2 top-2 rounded-md p-1 text-ink-faint transition hover:bg-surface-2 hover:text-ink"
       >
         ⋯
       </button>

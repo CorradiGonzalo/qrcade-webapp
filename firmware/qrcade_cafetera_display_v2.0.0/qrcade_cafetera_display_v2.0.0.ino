@@ -198,6 +198,19 @@ static const uint8_t AXS_READ_TOUCHPAD[11] = {
   0xb5, 0xab, 0xa5, 0x5a, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00
 };
 
+// El Arduino IDE auto-genera los prototipos de función y los inserta
+// ANTES de la primera función del archivo (leerToque, justo abajo) —
+// por eso este struct, usado recién mucho más abajo por el teclado del
+// "QR de empleado", tiene que estar declarado ACÁ (antes de la primera
+// función) y no al lado de donde se usa: si no, el prototipo
+// auto-generado de layoutTecladoPin() queda apuntando a un tipo que
+// todavía no existe y la compilación falla con "BotonPin was not
+// declared in this scope".
+struct BotonPin {
+  const char *etiqueta;
+  int x, y, w, h;
+};
+
 /** Lee el touch. Devuelve false si no hay ningún dedo apoyado (o si el
  * I2C falló) — nunca bloquea más que una transacción I2C normal. */
 bool leerToque(int &xOut, int &yOut) {
@@ -733,11 +746,6 @@ void dibujarPantallaQR() {
 // ============================================================================
 //       "QR DE EMPLEADO" — teclado de PIN y pantalla del segundo QR
 // ============================================================================
-struct BotonPin {
-  const char *etiqueta;
-  int x, y, w, h;
-};
-
 /** Grilla 4x3: 1-9, luego "<" (borrar) / "0" / "OK". Separado en su
  * propia función para que el dibujo y el hit-test usen EXACTAMENTE el
  * mismo layout. */

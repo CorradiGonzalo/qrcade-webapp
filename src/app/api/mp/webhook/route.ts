@@ -95,16 +95,37 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, already_processed: true });
   }
 
-  const { data: device } = await admin
+  // Primero probamos contra el QR PRINCIPAL (pos_id) — sin cambios. Si
+  // no matchea ninguna placa por ahí, probamos contra el QR DE EMPLEADO
+  // (empleado_pos_id, ver migración 0015) antes de darnos por vencidos.
+  // El QR de empleado es siempre monto fijo (no hay combos para él).
+  const { data: deviceCliente } = await admin
     .from("devices")
     .select("*")
     .eq("owner_id", profile.id)
     .eq("pos_id", orden.externalReference)
-    .single<Device>();
+    .maybeSingle<Device>();
+
+  let device: Device | null = deviceCliente ?? null;
+  let esPagoDeEmpleado = false;
+
+  if (!device) {
+    const { data: deviceEmpleado } = await admin
+      .from("devices")
+      .select("*")
+      .eq("owner_id", profile.id)
+      .eq("empleado_pos_id", orden.externalReference)
+      .maybeSingle<Device>();
+    if (deviceEmpleado) {
+      device = deviceEmpleado;
+      esPagoDeEmpleado = true;
+    }
+  }
 
   if (!device) {
     console.warn(
-      "Webhook de MP: orden pagada sin placa que matchee pos_id=" + orden.externalReference
+      "Webhook de MP: orden pagada sin placa que matchee pos_id/empleado_pos_id=" +
+        orden.externalReference
     );
     await admin.from("mp_payments").insert({
       device_id: null,
@@ -118,7 +139,16 @@ export async function POST(request: Request) {
 
   let fichas = 0;
 
-  if (device.mode === "fijo") {
+  if (esPagoDeEmpleado) {
+    // La orden de empleado se crea siempre con empleado_mp_monto_fijo —
+    // debería coincidir siempre, igual lo confirmamos antes de tirar.
+    if (
+      device.empleado_mp_monto_fijo &&
+      orden.totalAmount === Number(device.empleado_mp_monto_fijo)
+    ) {
+      fichas = 1;
+    }
+  } else if (device.mode === "fijo") {
     // La orden se creó con el monto fijo, así que debería coincidir
     // siempre — igual lo confirmamos antes de tirar la ficha.
     if (device.mp_monto_fijo && orden.totalAmount === Number(device.mp_monto_fijo)) {
@@ -143,11 +173,13 @@ export async function POST(request: Request) {
       admin,
       device.id,
       "dispense_payment",
-      `Pago acreditado de $${orden.totalAmount} — tirando ${fichas} ficha(s).`
+      esPagoDeEmpleado
+        ? `Pago de EMPLEADO acreditado de $${orden.totalAmount} — tirando ${fichas} ficha(s).`
+        : `Pago acreditado de $${orden.totalAmount} — tirando ${fichas} ficha(s).`
     );
   } else {
     console.warn(
-      `Webhook de MP: pago de $${orden.totalAmount} en placa ${device.id} sin combo que coincida — no se acredita nada.`
+      `Webhook de MP: pago de $${orden.totalAmount} en placa ${device.id} (${esPagoDeEmpleado ? "empleado" : "cliente"}) sin combo que coincida — no se acredita nada.`
     );
   }
 
@@ -161,8 +193,23 @@ export async function POST(request: Request) {
 
   // En modo fijo, creamos una orden nueva para la próxima venta — cada
   // orden de la Orders API se consume con el pago, no queda "reusable"
-  // como el viejo bloqueo por PUT.
-  if (device.mode === "fijo" && device.mp_monto_fijo && device.pos_id) {
+  // como el viejo bloqueo por PUT. El QR de empleado es siempre monto
+  // fijo, así que se re-arma con la misma lógica, contra su propia
+  // caja (empleado_pos_id), sin tocar la orden del QR principal.
+  if (esPagoDeEmpleado) {
+    if (device.empleado_mp_monto_fijo && device.empleado_pos_id) {
+      try {
+        await crearOrdenMontoFijo(
+          profile.mp_access_token,
+          device.empleado_pos_id,
+          device.empleado_caja_name ?? "QRcade-Empleado",
+          Number(device.empleado_mp_monto_fijo)
+        );
+      } catch (err) {
+        console.error("No se pudo re-armar la orden de empleado tras el pago:", err);
+      }
+    }
+  } else if (device.mode === "fijo" && device.mp_monto_fijo && device.pos_id) {
     try {
       await crearOrdenMontoFijo(
         profile.mp_access_token,

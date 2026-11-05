@@ -29,9 +29,22 @@ export async function GET(
 
   const { data: device } = await admin
     .from("devices")
-    .select("qr_data, is_paused, mode, mp_monto_fijo")
+    .select(
+      "qr_data, is_paused, mode, mp_monto_fijo, empleado_pin, empleado_qr_data, empleado_mp_monto_fijo"
+    )
     .eq("display_pairing_code", code)
-    .single<Pick<Device, "qr_data" | "is_paused" | "mode" | "mp_monto_fijo">>();
+    .single<
+      Pick<
+        Device,
+        | "qr_data"
+        | "is_paused"
+        | "mode"
+        | "mp_monto_fijo"
+        | "empleado_pin"
+        | "empleado_qr_data"
+        | "empleado_mp_monto_fijo"
+      >
+    >();
 
   if (!device) {
     return NextResponse.json({ error: "Código no encontrado." }, { status: 404 });
@@ -42,5 +55,11 @@ export async function GET(
     is_paused: device.is_paused,
     mode: device.mode,
     mp_monto_fijo: device.mp_monto_fijo,
+    // QR de empleado — null/vacío si el dueño no lo configuró, en cuyo
+    // caso la pantalla simplemente no debe ofrecer la opción de tocar
+    // para destaparlo. Ver migración 0015.
+    empleado_pin: device.empleado_pin,
+    empleado_qr_data: device.empleado_qr_data,
+    empleado_mp_monto_fijo: device.empleado_mp_monto_fijo,
   });
 }

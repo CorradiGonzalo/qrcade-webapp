@@ -61,6 +61,17 @@ export interface Device {
   // Ver migración 0014 — sólo se usa para que una ESP32 "sólo pantalla"
   // (sin relé) pida el QR vigente sin ser tratada como una placa nueva.
   display_pairing_code: string | null;
+  // "QR de empleado" — ver migración 0015. Totalmente independiente del
+  // QR principal (local_name/caja_name/mp_monto_fijo/store_id/pos_id/
+  // qr_data/provisioned_at de arriba, que NUNCA se tocan para esto).
+  empleado_pin: string | null;
+  empleado_caja_name: string | null;
+  empleado_mp_monto_fijo: number | null;
+  empleado_store_id: string | null;
+  empleado_pos_id: string | null;
+  empleado_qr_data: string | null;
+  empleado_provisioned_at: string | null;
+  cafe_mp_external_reference_empleado: string | null;
   created_at: string;
   claimed_at: string | null;
   revoked_at: string | null;

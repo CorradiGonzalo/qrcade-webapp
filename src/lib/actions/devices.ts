@@ -180,6 +180,125 @@ export async function saveDeviceBillingAction(
 }
 
 // =====================================================================
+//        "QR DE EMPLEADO" — segundo QR, mismo local, precio propio
+// =====================================================================
+// Reusa EXACTAMENTE la misma lógica de Mercado Pago que
+// saveDeviceBillingAction (Store → Caja → Orden de monto fijo), pero:
+//   - Nunca pide (ni acepta) un local nuevo: siempre usa el
+//     local_name/store_id que ya tiene guardado el QR PRINCIPAL de la
+//     placa. Si el principal todavía no está aprovisionado, no hay
+//     local del que partir, así que esto no se puede guardar todavía.
+//   - Siempre es monto fijo (no existe modo "combo" para el QR de
+//     empleado — el pedido fue sólo "nombre de la caja y el monto").
+//   - Escribe únicamente en las columnas empleado_* (migración 0015).
+//     Las columnas del QR principal (local_name, caja_name,
+//     mp_monto_fijo, store_id, pos_id, qr_data, provisioned_at) jamás
+//     se leen para escribir ni se modifican acá.
+export type SaveDeviceEmployeeBillingState =
+  | { error?: string; ok?: boolean }
+  | undefined;
+
+export async function saveDeviceEmployeeBillingAction(
+  _prevState: SaveDeviceEmployeeBillingState,
+  formData: FormData
+): Promise<SaveDeviceEmployeeBillingState> {
+  const { supabase, userId } = await ownedSupabase();
+
+  const deviceId = String(formData.get("device_id") || "");
+  const cajaName = String(formData.get("empleado_caja_name") || "").trim();
+  const pin = String(formData.get("empleado_pin") || "").trim();
+  const montoRaw = String(formData.get("empleado_mp_monto_fijo") || "").trim();
+  const monto = montoRaw ? Number(montoRaw) : null;
+
+  if (!deviceId) return { error: "Falta la máquina." };
+  if (!cajaName) return { error: "Completá el nombre de la caja de empleado." };
+  if (monto === null || Number.isNaN(monto) || monto <= 0) {
+    return { error: "El monto del QR de empleado tiene que ser mayor a 0." };
+  }
+  if (!/^\d{4,6}$/.test(pin)) {
+    return { error: "El PIN tiene que ser numérico, de 4 a 6 dígitos." };
+  }
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("mp_access_token, mp_user_id")
+    .eq("id", userId)
+    .single<Pick<Profile, "mp_access_token" | "mp_user_id">>();
+
+  if (!profile?.mp_access_token || !profile.mp_user_id) {
+    return {
+      error:
+        "Primero cargá el Access Token de tu cuenta de Mercado Pago (Mi cuenta).",
+    };
+  }
+
+  const { data: device } = await supabase
+    .from("devices")
+    .select("*")
+    .eq("id", deviceId)
+    .eq("owner_id", userId)
+    .single<Device>();
+
+  if (!device) return { error: "No se encontró la máquina." };
+
+  // El QR de empleado SIEMPRE cuelga del mismo local que el principal —
+  // si éste todavía no tiene store_id/local_name, no hay de dónde partir.
+  if (!device.store_id || !device.local_name) {
+    return {
+      error:
+        "Primero configurá y guardá el QR principal de esta máquina (local y caja) — el QR de empleado reusa ese mismo local.",
+    };
+  }
+  if (device.kind !== "cafetera") {
+    return { error: "El QR de empleado sólo existe para cafeteras." };
+  }
+  if (!device.cafe_mp_external_reference_empleado) {
+    return { error: "No se pudo calcular el identificador de la caja de empleado." };
+  }
+
+  const token = profile.mp_access_token;
+  const externalIdCajaEmpleado = device.cafe_mp_external_reference_empleado;
+
+  let qrData: string;
+  try {
+    // Nunca se vuelve a crear/buscar la tienda: se reusa el storeId que
+    // ya quedó guardado al configurar el QR principal.
+    qrData = await buscarOCrearCaja(token, device.store_id, externalIdCajaEmpleado, cajaName);
+    await crearOrdenMontoFijo(token, externalIdCajaEmpleado, cajaName, monto);
+
+    const { error } = await supabase
+      .from("devices")
+      .update({
+        empleado_caja_name: cajaName,
+        empleado_mp_monto_fijo: monto,
+        empleado_pin: pin,
+        empleado_store_id: device.store_id,
+        empleado_pos_id: externalIdCajaEmpleado,
+        empleado_qr_data: qrData,
+        empleado_provisioned_at: new Date().toISOString(),
+      })
+      .eq("id", deviceId);
+
+    if (error) {
+      return {
+        error:
+          "Se aprovisionó en Mercado Pago pero no se pudo guardar. Probá de nuevo.",
+      };
+    }
+  } catch (err) {
+    const msg =
+      err instanceof MercadoPagoError
+        ? err.message
+        : "Error inesperado hablando con Mercado Pago.";
+    return { error: msg };
+  }
+
+  revalidatePath(`/dashboard/maquinas/${deviceId}`);
+  revalidatePath(`/dashboard/maquinas/${deviceId}/cobro`);
+  return { ok: true };
+}
+
+// =====================================================================
 //           CONFIG OPERATIVA DE CAFETERA (kind='cafetera')
 // =====================================================================
 export type SaveCafeteraConfigState = { error?: string; ok?: boolean } | undefined;

@@ -26,7 +26,20 @@ export default async function DashboardPage(
 
   const carpetaActual =
     typeof sp.carpeta === "string" && sp.carpeta.length > 0 ? sp.carpeta : null;
-  const list = all.filter((d) => (d.folder_id ?? null) === carpetaActual);
+
+  // Una máquina puede tener folder_id apuntando a una carpeta que NO es de
+  // este árbol (por ejemplo: un admin la organizó dentro de una carpeta de
+  // SU propio árbol, para ordenar su panel). Esa carpeta nunca va a estar
+  // en `folders` (que sólo trae las carpetas de este dueño), así que para
+  // este dueño esa máquina tiene que verse como "suelta" (sin carpeta) —
+  // si no, la máquina queda invisible para siempre: no está en la raíz
+  // (folder_id no es null) y tampoco hay ninguna carpeta navegable que
+  // lleve hasta ella. Las carpetas son sólo organización visual de cada
+  // dueño; nunca deberían poder esconderle una máquina a su propio dueño.
+  const misCarpetaIds = new Set(folders.map((f) => f.id));
+  const carpetaEfectiva = (d: Device) =>
+    d.folder_id && misCarpetaIds.has(d.folder_id) ? d.folder_id : null;
+  const list = all.filter((d) => carpetaEfectiva(d) === carpetaActual);
 
   // El aviso de firmware pendiente se chequea sobre TODAS las máquinas
   // del dueño, no sólo las de la carpeta que está mirando ahora — si no,

@@ -42,7 +42,14 @@ export default async function AdminEquiposPage(
   };
 
   const all = devices ?? [];
-  const list = all.filter((d) => (d.folder_id ?? null) === carpetaActual);
+  // Mismo cuidado que en /dashboard: una máquina puede tener folder_id
+  // apuntando a una carpeta que no es del árbol de admin (por ejemplo, el
+  // propio dueño la organizó en una carpeta suya) — para esta vista eso
+  // también tiene que verse como "suelta", nunca invisible.
+  const misCarpetaIds = new Set(folders.map((f) => f.id));
+  const carpetaEfectiva = (d: Device) =>
+    d.folder_id && misCarpetaIds.has(d.folder_id) ? d.folder_id : null;
+  const list = all.filter((d) => carpetaEfectiva(d) === carpetaActual);
   const counts = {
     claimed: all.filter((d) => d.status === "claimed").length,
     unclaimed: all.filter((d) => d.status === "unclaimed").length,
