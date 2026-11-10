@@ -58,6 +58,13 @@ export interface Device {
   cafe_clean_every_n_cycles: number;
   cafe_bt_reset_cmd: string;
   cafe_pulso_nivel_high: boolean;
+  // Ver migración 0017 — basado en el análisis del firmware original de
+  // otra placa. is_cleaning lo reporta la propia placa (true mientras
+  // dura un ciclo de limpieza); los otros dos eran fijos en el código y
+  // ahora son configurables como el resto de cafe_*.
+  is_cleaning: boolean;
+  cafe_mp_check_interval_ms: number;
+  cafe_clean_gap_ms: number;
   // Ver migración 0014 — sólo se usa para que una ESP32 "sólo pantalla"
   // (sin relé) pida el QR vigente sin ser tratada como una placa nueva.
   display_pairing_code: string | null;
@@ -72,6 +79,10 @@ export interface Device {
   empleado_qr_data: string | null;
   empleado_provisioned_at: string | null;
   cafe_mp_external_reference_empleado: string | null;
+  // Ver migración 0016 — último pago acreditado (principal o de
+  // empleado/"QR oferta", sin distinguir), para que la pantalla externa
+  // muestre un aviso de "Pago acreditado" al detectar el cambio.
+  last_payment_at: string | null;
   created_at: string;
   claimed_at: string | null;
   revoked_at: string | null;
@@ -116,7 +127,8 @@ export type DeviceEventType =
   | "dispense_payment"
   | "restart_requested"
   | "firmware_update"
-  | "clean_cycle";
+  | "clean_cycle"
+  | "restart_reason";
 
 export interface DeviceEvent {
   id: string;

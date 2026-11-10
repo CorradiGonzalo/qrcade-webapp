@@ -147,6 +147,33 @@ export async function POST(request: Request) {
     }
   }
 
+  // Campos sólo-cafetera que la placa reporta SOBRE SÍ MISMA (al revés del
+  // resto del check-in, que es backend -> placa): si está limpiando ahora
+  // mismo (para que la pantalla externa oculte el QR, ver api/display/
+  // [code]/qr) y, sólo en el primer check-in después de bootear, por qué
+  // se reinició la última vez (diagnóstico remoto, ver migración 0017).
+  // Ninguno de los dos existe en el firmware de garra, así que para esas
+  // placas body.is_cleaning/body.restart_reason vienen undefined y no se
+  // hace nada acá — cero riesgo para el camino de garra.
+  if (device.kind === "cafetera") {
+    if (typeof body.is_cleaning === "boolean" && body.is_cleaning !== device.is_cleaning) {
+      await admin
+        .from("devices")
+        .update({ is_cleaning: body.is_cleaning })
+        .eq("id", device.id);
+      device.is_cleaning = body.is_cleaning;
+    }
+
+    if (typeof body.restart_reason === "string" && body.restart_reason.trim().length > 0) {
+      await logDeviceEvent(
+        admin,
+        device.id,
+        "restart_reason",
+        `Último reinicio: ${body.restart_reason.trim()}.`
+      );
+    }
+  }
+
   if (device.status === "revoked") {
     return NextResponse.json({ status: "revoked" });
   }

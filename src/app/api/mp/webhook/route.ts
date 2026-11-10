@@ -177,6 +177,14 @@ export async function POST(request: Request) {
         ? `Pago de EMPLEADO acreditado de $${orden.totalAmount} — tirando ${fichas} ficha(s).`
         : `Pago acreditado de $${orden.totalAmount} — tirando ${fichas} ficha(s).`
     );
+    // Sólo para que la pantalla externa (sin relé, ver api/display/
+    // [code]/qr) pueda detectar "hubo un pago nuevo" comparando este
+    // valor entre polls y mostrar un aviso de "Pago acreditado" — no
+    // afecta nada de la lógica de dispensado, que ya corrió arriba.
+    await admin
+      .from("devices")
+      .update({ last_payment_at: new Date().toISOString() })
+      .eq("id", device.id);
   } else {
     console.warn(
       `Webhook de MP: pago de $${orden.totalAmount} en placa ${device.id} (${esPagoDeEmpleado ? "empleado" : "cliente"}) sin combo que coincida — no se acredita nada.`

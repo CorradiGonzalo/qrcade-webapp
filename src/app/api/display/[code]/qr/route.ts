@@ -30,7 +30,7 @@ export async function GET(
   const { data: device } = await admin
     .from("devices")
     .select(
-      "qr_data, is_paused, mode, mp_monto_fijo, empleado_pin, empleado_qr_data, empleado_mp_monto_fijo"
+      "qr_data, is_paused, mode, mp_monto_fijo, empleado_pin, empleado_qr_data, empleado_mp_monto_fijo, last_payment_at, is_cleaning"
     )
     .eq("display_pairing_code", code)
     .single<
@@ -43,6 +43,8 @@ export async function GET(
         | "empleado_pin"
         | "empleado_qr_data"
         | "empleado_mp_monto_fijo"
+        | "last_payment_at"
+        | "is_cleaning"
       >
     >();
 
@@ -61,5 +63,12 @@ export async function GET(
     empleado_pin: device.empleado_pin,
     empleado_qr_data: device.empleado_qr_data,
     empleado_mp_monto_fijo: device.empleado_mp_monto_fijo,
+    // Ver migración 0016 — la pantalla compara esto contra el valor que
+    // tenía en el poll anterior para mostrar "Pago acreditado".
+    last_payment_at: device.last_payment_at,
+    // Ver migración 0017 — mientras la cafetera está limpiando, la
+    // pantalla NO debe mostrar el QR ni aceptar pagos (nadie recibiría
+    // su café hasta que termine la limpieza).
+    is_cleaning: device.is_cleaning,
   });
 }

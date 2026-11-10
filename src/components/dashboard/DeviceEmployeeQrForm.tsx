@@ -23,7 +23,7 @@ export function DeviceEmployeeQrForm({ device }: { device: Device }) {
 
   return (
     <div className="rounded-2xl border border-line bg-surface p-6">
-      <div className="mb-1 text-sm font-bold">QR de empleado</div>
+      <div className="mb-1 text-sm font-bold">QR oferta</div>
       <p className="mb-4 text-xs text-ink-muted">
         Un segundo QR, con su propio precio, para que lo use el personal.
         Usa el mismo local que el QR principal ({device.local_name ?? "—"}) —
@@ -34,7 +34,7 @@ export function DeviceEmployeeQrForm({ device }: { device: Device }) {
       {!localListoParaEmpleado && (
         <div className="mb-4 rounded-lg border border-warn bg-warn-bg px-4 py-3 text-xs text-warn">
           ⚠ Primero guardá el QR principal (local y caja) más arriba — el
-          QR de empleado reusa ese mismo local y todavía no está
+          QR oferta reusa ese mismo local y todavía no está
           configurado.
         </div>
       )}
@@ -44,12 +44,12 @@ export function DeviceEmployeeQrForm({ device }: { device: Device }) {
 
         <div>
           <label className="mb-1.5 block text-xs font-semibold text-ink-muted">
-            Nombre de la caja de empleado
+            Nombre de la caja del QR oferta
           </label>
           <input
             name="empleado_caja_name"
             defaultValue={device.empleado_caja_name ?? ""}
-            placeholder="ej: Garra-1-Empleados"
+            placeholder="ej: Garra-1-Oferta"
             disabled={!localListoParaEmpleado}
             className="w-full rounded-lg border border-line-soft bg-surface-2 px-3.5 py-3 text-sm text-ink outline-none focus:border-brand disabled:opacity-50"
           />
@@ -57,7 +57,7 @@ export function DeviceEmployeeQrForm({ device }: { device: Device }) {
 
         <div>
           <label className="mb-1.5 block text-xs font-semibold text-ink-muted">
-            Monto fijo (empleado)
+            Monto fijo (oferta)
           </label>
           <div className="flex items-center rounded-lg border border-line-soft bg-surface-2 px-3.5 py-3">
             <span className="mr-1.5 text-sm text-info">$</span>
@@ -100,7 +100,7 @@ export function DeviceEmployeeQrForm({ device }: { device: Device }) {
           </div>
           <p className="mt-1.5 text-[11px] text-ink-faint">
             En la pantalla de la cafetera: tocar en cualquier lugar,
-            escribir este PIN, y se muestra el QR de empleado por 30
+            escribir este PIN, y se muestra el QR oferta por 30
             segundos. 3 intentos fallidos bloquean el teclado por un
             rato.
           </p>
@@ -111,7 +111,7 @@ export function DeviceEmployeeQrForm({ device }: { device: Device }) {
         )}
         {state?.ok && (
           <p className="text-xs font-medium text-ok">
-            QR de empleado guardado y aprovisionado ✓
+            QR oferta guardado y aprovisionado ✓
           </p>
         )}
 
@@ -120,7 +120,7 @@ export function DeviceEmployeeQrForm({ device }: { device: Device }) {
           disabled={pending || !localListoParaEmpleado}
           className="w-full rounded-lg border border-line-soft bg-surface-2 py-3 text-sm font-semibold text-ink transition hover:opacity-90 disabled:opacity-60"
         >
-          {pending ? "Aprovisionando…" : "Guardar QR de empleado"}
+          {pending ? "Aprovisionando…" : "Guardar QR oferta"}
         </button>
       </form>
     </div>

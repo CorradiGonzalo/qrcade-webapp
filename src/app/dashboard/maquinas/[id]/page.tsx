@@ -30,6 +30,10 @@ const EVENT_LABELS: Record<DeviceEvent["type"], string> = {
   restart_requested: "⟲ Reinicio",
   firmware_update: "🆕 Firmware",
   clean_cycle: "🧽 Limpieza",
+  // Ver migración 0017 — diagnóstico de por qué se reinició la placa
+  // la última vez (heap bajo / WiFi caído / uptime / OTA / comando
+  // remoto / factory reset / timeout de portal, ver cafetera v1.1.0).
+  restart_reason: "🔁 Reinicio",
 };
 
 export default async function DeviceDetailPage(
