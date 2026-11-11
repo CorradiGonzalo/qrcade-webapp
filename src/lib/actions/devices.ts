@@ -578,6 +578,42 @@ export async function generateDisplayPairingCodeAction(deviceId: string) {
   throw new Error(ultimoError ?? "No se pudo generar el código. Probá de nuevo.");
 }
 
+/**
+ * Guarda el "logo del cliente" (LOGO1.BIN) de ESTA máquina, ya subido
+ * por el dueño a Storage desde el browser (ver LogoClienteUploadForm —
+ * mismo patrón que UploadFirmwareForm: la conversión y la subida al
+ * bucket pasan en el cliente, acá sólo persistimos la URL resultante).
+ * No toca nada de la pantalla del admin (logo NexoQR, ver
+ * saveLogoNexoAction) ni ningún otro campo de la máquina.
+ */
+export async function saveDeviceLogoClienteAction(deviceId: string, url: string) {
+  const { supabase, userId } = await ownedSupabase();
+
+  const { data: device } = await supabase
+    .from("devices")
+    .select("id, kind")
+    .eq("id", deviceId)
+    .eq("owner_id", userId)
+    .single<Pick<Device, "id" | "kind">>();
+
+  if (!device) throw new Error("No se encontró la máquina.");
+  if (device.kind !== "cafetera") {
+    throw new Error("El logo de pantalla sólo existe para cafeteras.");
+  }
+  if (!url) throw new Error("Falta la URL del logo subido.");
+
+  const { error } = await supabase
+    .from("devices")
+    .update({
+      display_logo_cliente_url: url,
+      display_logo_cliente_version: Date.now(),
+    })
+    .eq("id", deviceId);
+  if (error) throw new Error(error.message);
+
+  revalidatePath(`/dashboard/maquinas/${deviceId}`);
+}
+
 export async function respondFirmwareAction(
   deviceId: string,
   firmwareVersionId: string,

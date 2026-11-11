@@ -5,6 +5,7 @@ import { requireActiveUser } from "@/lib/supabase/auth";
 import { CafeteraConfigForm } from "@/components/dashboard/CafeteraConfigForm";
 import { DeviceActions } from "@/components/dashboard/DeviceActions";
 import { DisplayPairingCard } from "@/components/dashboard/DisplayPairingCard";
+import { LogoClienteUploadForm } from "@/components/dashboard/LogoClienteUploadForm";
 import { DeviceNameEditor } from "@/components/dashboard/DeviceNameEditor";
 import { FirmwareBanner } from "@/components/dashboard/FirmwareBanner";
 import { SalesPeriodFilter } from "@/components/dashboard/SalesPeriodFilter";
@@ -346,6 +347,12 @@ export default async function DeviceDetailPage(
           )}
 
           {esCafetera && <DisplayPairingCard device={device} />}
+
+          {esCafetera && (
+            <div className="mt-4">
+              <LogoClienteUploadForm device={device} />
+            </div>
+          )}
 
           <div className="mt-4 rounded-2xl border border-line bg-surface p-5">
             <div className="mb-3 text-sm font-bold">Info del equipo</div>

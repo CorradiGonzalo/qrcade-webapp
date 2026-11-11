@@ -83,6 +83,12 @@ export interface Device {
   // empleado/"QR oferta", sin distinguir), para que la pantalla externa
   // muestre un aviso de "Pago acreditado" al detectar el cambio.
   last_payment_at: string | null;
+  // Ver migración 0019 — "logo del cliente" de la pantalla, subido por
+  // el dueño desde la app (reemplaza tener que copiarlo a mano a la
+  // microSD). El logo NexoQR (global, lo sube un admin) NO vive en esta
+  // tabla — ver app_settings (logo_nexo_url / logo_nexo_version).
+  display_logo_cliente_url: string | null;
+  display_logo_cliente_version: number | null;
   created_at: string;
   claimed_at: string | null;
   revoked_at: string | null;

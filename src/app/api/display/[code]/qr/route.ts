@@ -30,7 +30,7 @@ export async function GET(
   const { data: device } = await admin
     .from("devices")
     .select(
-      "qr_data, is_paused, mode, mp_monto_fijo, empleado_pin, empleado_qr_data, empleado_mp_monto_fijo, last_payment_at, is_cleaning"
+      "qr_data, is_paused, mode, mp_monto_fijo, empleado_pin, empleado_qr_data, empleado_mp_monto_fijo, last_payment_at, is_cleaning, display_logo_cliente_url, display_logo_cliente_version"
     )
     .eq("display_pairing_code", code)
     .single<
@@ -45,12 +45,28 @@ export async function GET(
         | "empleado_mp_monto_fijo"
         | "last_payment_at"
         | "is_cleaning"
+        | "display_logo_cliente_url"
+        | "display_logo_cliente_version"
       >
     >();
 
   if (!device) {
     return NextResponse.json({ error: "Código no encontrado." }, { status: 404 });
   }
+
+  // Logo NexoQR — ver migración 0019. Es GLOBAL (no depende de esta
+  // máquina ni de su dueño), vive en app_settings en vez de en
+  // devices. Si todavía no lo subió ningún admin, estas dos filas
+  // simplemente no existen y quedan null — la pantalla no toca nada.
+  const { data: settings } = await admin
+    .from("app_settings")
+    .select("key, value")
+    .in("key", ["logo_nexo_url", "logo_nexo_version"]);
+
+  const logoNexoUrl =
+    settings?.find((s) => s.key === "logo_nexo_url")?.value ?? null;
+  const logoNexoVersionRaw =
+    settings?.find((s) => s.key === "logo_nexo_version")?.value ?? null;
 
   return NextResponse.json({
     qr_data: device.qr_data,
@@ -70,5 +86,14 @@ export async function GET(
     // pantalla NO debe mostrar el QR ni aceptar pagos (nadie recibiría
     // su café hasta que termine la limpieza).
     is_cleaning: device.is_cleaning,
+    // Ver migración 0019 — logos subidos desde la app. "cliente" es
+    // de ESTA máquina (null si el dueño nunca subió nada por la app);
+    // "nexo" es global, igual para todas. Firmware de pantalla viejo
+    // (anterior a v2.5.0) simplemente ignora estos 4 campos — no rompe
+    // nada, no hace falta reflashear para aplicar esta migración.
+    logo_cliente_url: device.display_logo_cliente_url,
+    logo_cliente_version: device.display_logo_cliente_version,
+    logo_nexo_url: logoNexoUrl,
+    logo_nexo_version: logoNexoVersionRaw ? Number(logoNexoVersionRaw) : null,
   });
 }

@@ -200,6 +200,32 @@ export async function cancelarActualizacionPendienteAction(
   revalidatePath("/admin/firmware");
 }
 
+/**
+ * Guarda el "logo NexoQR" (LOGO2.BIN) GLOBAL — uno solo para toda la
+ * plataforma, sin importar el dueño de cada máquina. Vive en
+ * app_settings (no en devices) porque no es por-máquina: ver
+ * migración 0019. Igual que el logo del cliente, la conversión y la
+ * subida a Storage ya pasaron en el browser (UploadLogoNexoForm) —
+ * acá sólo persistimos la URL + un nuevo "version" para que todas las
+ * pantallas detecten el cambio en su próximo poll.
+ */
+export async function saveLogoNexoAction(url: string) {
+  await requireAdminSession();
+  if (!url) throw new Error("Falta la URL del logo subido.");
+
+  const admin = createAdminClient();
+  const version = String(Date.now());
+  const now = new Date().toISOString();
+
+  const { error } = await admin.from("app_settings").upsert([
+    { key: "logo_nexo_url", value: url, updated_at: now },
+    { key: "logo_nexo_version", value: version, updated_at: now },
+  ]);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/admin/firmware");
+}
+
 export type UploadFirmwareState = { error?: string; ok?: boolean } | undefined;
 
 export async function uploadFirmwareAction(

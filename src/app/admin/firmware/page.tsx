@@ -1,5 +1,6 @@
 import { requireAdmin } from "@/lib/supabase/auth";
 import { UploadFirmwareForm } from "@/components/admin/UploadFirmwareForm";
+import { UploadLogoNexoForm } from "@/components/admin/UploadLogoNexoForm";
 import { CancelUpdateButton } from "@/components/admin/CancelUpdateButton";
 import { Card } from "@/components/Card";
 import { Badge } from "@/components/Badge";
@@ -86,7 +87,10 @@ export default async function AdminFirmwarePage() {
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_1.4fr]">
-        <UploadFirmwareForm />
+        <div className="space-y-6">
+          <UploadFirmwareForm />
+          <UploadLogoNexoForm />
+        </div>
 
         <div>
           <div className="mb-3 text-sm font-bold">Versiones publicadas</div>
