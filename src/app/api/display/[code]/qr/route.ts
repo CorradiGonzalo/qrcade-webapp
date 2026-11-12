@@ -91,9 +91,20 @@ export async function GET(
     // "nexo" es global, igual para todas. Firmware de pantalla viejo
     // (anterior a v2.5.0) simplemente ignora estos 4 campos — no rompe
     // nada, no hace falta reflashear para aplicar esta migración.
+    //
+    // *_version va como STRING a propósito (nunca como number): es un
+    // epoch en milisegundos (13 dígitos), y el "long" del firmware en
+    // el ESP32 es de 32 bits — un número JSON ahí se trunca/corrompe y
+    // la pantalla nunca detecta el cambio de versión (quedó así en el
+    // v2.5.0 original: subías el logo y la placa nunca lo bajaba). La
+    // pantalla compara el string tal cual, nunca lo interpreta como
+    // entero, así que no hay límite de tamaño posible.
     logo_cliente_url: device.display_logo_cliente_url,
-    logo_cliente_version: device.display_logo_cliente_version,
+    logo_cliente_version:
+      device.display_logo_cliente_version != null
+        ? String(device.display_logo_cliente_version)
+        : null,
     logo_nexo_url: logoNexoUrl,
-    logo_nexo_version: logoNexoVersionRaw ? Number(logoNexoVersionRaw) : null,
+    logo_nexo_version: logoNexoVersionRaw,
   });
 }
