@@ -92,19 +92,27 @@ export async function GET(
     // (anterior a v2.5.0) simplemente ignora estos 4 campos — no rompe
     // nada, no hace falta reflashear para aplicar esta migración.
     //
-    // *_version va como STRING a propósito (nunca como number): es un
-    // epoch en milisegundos (13 dígitos), y el "long" del firmware en
-    // el ESP32 es de 32 bits — un número JSON ahí se trunca/corrompe y
-    // la pantalla nunca detecta el cambio de versión (quedó así en el
-    // v2.5.0 original: subías el logo y la placa nunca lo bajaba). La
-    // pantalla compara el string tal cual, nunca lo interpreta como
-    // entero, así que no hay límite de tamaño posible.
+    // *_version se manda en SEGUNDOS, no en milisegundos (aunque se
+    // guarda en milisegundos — Date.now() — tanto en devices como en
+    // app_settings). Motivo: esta placa compara la versión con un
+    // "long" de 32 bits (max ~2147 millones); un epoch en milisegundos
+    // (13 dígitos, ~1.7 billones) se trunca/corrompe ahí y la pantalla
+    // nunca detecta el cambio — así quedó el bug original (se subía el
+    // logo desde la app pero la placa nunca lo bajaba). En segundos
+    // entra cómodo (~1.8 mil millones hoy, contra un máximo de ~2147
+    // millones — hasta 2038). Esto es intencionalmente un fix SÓLO
+    // del backend: una placa que ya tiene el firmware de pantalla
+    // v2.5.0 (con la lógica de descarga, pero recibiendo la versión
+    // corrupta) empieza a funcionar sola con este cambio, sin que haga
+    // falta reflashear nada.
     logo_cliente_url: device.display_logo_cliente_url,
     logo_cliente_version:
       device.display_logo_cliente_version != null
-        ? String(device.display_logo_cliente_version)
+        ? Math.floor(device.display_logo_cliente_version / 1000)
         : null,
     logo_nexo_url: logoNexoUrl,
-    logo_nexo_version: logoNexoVersionRaw,
+    logo_nexo_version: logoNexoVersionRaw
+      ? Math.floor(Number(logoNexoVersionRaw) / 1000)
+      : null,
   });
 }

@@ -5,16 +5,19 @@
   controlador AXS15231B por bus QSPI.
   ============================================================================
   FIX v2.5.1 (la pantalla nunca bajaba el logo subido desde la app):
-  El v2.5.0 guardaba la "version" del logo en un `long` (32 bits en el
-  ESP32), pero el backend manda un epoch en milisegundos de 13 dígitos
-  — mucho más grande de lo que entra en 32 bits. Resultado: la versión
-  se leía truncada/en 0 y esta pantalla nunca detectaba el cambio, así
-  que nunca descargaba nada (seguía mostrando lo que ya tenía en la SD
-  aunque el dueño/admin subiera un logo nuevo desde la app). Ahora la
-  version se compara como String (texto), sin pasar nunca por un
-  entero — sin límite de tamaño posible. Mismo fix también del lado
-  del backend (api/display/[code]/qr manda *_version como string, no
-  como number). Cero cambios de comportamiento para el resto.
+  El bug era 100% del lado del BACKEND, no de esta placa: api/display/
+  [code]/qr mandaba la "version" del logo como epoch en MILISEGUNDOS
+  (13 dígitos, ~1.7 billones) — mucho más grande de lo que entra en un
+  "long" de 32 bits (max ~2147 millones), que es lo que usa esta placa
+  para comparar. Resultado: la version se leía truncada/en 0 y esta
+  pantalla nunca detectaba el cambio, así que nunca descargaba nada.
+  El fix fue cambiar el backend para que mande la version en SEGUNDOS
+  en vez de milisegundos (entra cómodo en 32 bits, hasta 2038) — esta
+  placa NO CAMBIÓ SU LÓGICA, sigue comparando con un "long" exactamente
+  igual que en v2.5.0. Por eso una placa que YA tiene el v2.5.0 flasheado
+  arranca a funcionar sola, sin reflashear nada, en cuanto el backend
+  se redeploye — este v2.5.1 es sólo para los comentarios/versionado,
+  el código es funcionalmente idéntico al v2.5.0 en esta parte.
 
   NOVEDAD v2.5.0 (logos subidos desde la app, sin tocar la microSD a mano):
   Hasta ahora LOGO1.BIN ("logo del cliente") y LOGO2.BIN ("logo NexoQR")
@@ -753,28 +756,29 @@ bool inicializarSD() {
 // que leer la SD de nuevo cada vez. Se cargan una sola vez al bootear
 // (cargarVersionesLogosCacheadas(), llamada desde setup()) y se actualizan
 // solas cada vez que una descarga nueva termina bien.
-// IMPORTANTE: la version es un STRING, nunca un numero. Es un epoch en
-// milisegundos (13 dígitos) que manda el backend — un "long" en el
-// ESP32 es de sólo 32 bits y se trunca/corrompe con un numero de ese
-// tamaño, lo que hacía que esta pantalla nunca detectara el cambio de
-// version (asi quedo el v2.5.0 original: se subia el logo desde la app
-// pero la placa nunca lo bajaba). Comparando como texto no hay limite
-// de tamaño posible — nunca se interpreta como entero, sólo se compara
-// contra lo que ya está guardado.
-String logoClienteVersionCache = "";
-String logoNexoVersionCache = "";
+// IMPORTANTE: el backend manda la version como epoch en SEGUNDOS (no en
+// milisegundos) a propósito — un "long" en el ESP32 es de sólo 32 bits
+// (max ~2147M) y un epoch en milisegundos (13 dígitos, ~1.7 billones)
+// se trunca/corrompe ahí, lo que hacía que esta pantalla nunca
+// detectara el cambio de version (asi quedo el v2.5.0 original: se
+// subia el logo desde la app pero la placa nunca lo bajaba). En
+// segundos entra sin problema (~1.8 mil millones hoy, contra un max de
+// ~2147 millones -- cómodo hasta 2038). El fix real fue del lado del
+// backend (api/display/[code]/qr) — esta placa no necesita tocarse si
+// ya tiene este mismo código (el de v2.5.0), sólo esperar al redeploy.
+long logoClienteVersionCache = 0;
+long logoNexoVersionCache = 0;
 
-String leerVersionDesdeSD(const char *ruta) {
-  if (!SD.exists(ruta)) return "";
+long leerVersionDesdeSD(const char *ruta) {
+  if (!SD.exists(ruta)) return 0;
   File f = SD.open(ruta, FILE_READ);
-  if (!f) return "";
+  if (!f) return 0;
   String s = f.readString();
   f.close();
-  s.trim();
-  return s;
+  return s.toInt();
 }
 
-void guardarVersionEnSD(const char *ruta, const String &version) {
+void guardarVersionEnSD(const char *ruta, long version) {
   File f = SD.open(ruta, FILE_WRITE);
   if (!f) {
     logLine("!! logo: no se pudo guardar la version en " + String(ruta));
@@ -893,10 +897,10 @@ bool descargarLogoASD(const char *url, const char *rutaSD) {
  * actualiza la version cacheada -- así se reintenta solo en el proximo
  * poll, sin bloquear ni repetir el ciclo de pantalla. */
 void verificarYActualizarLogo(const char *rutaLogo, const char *rutaVersionSD,
-                               String &versionCacheada, const char *urlNueva,
-                               const String &versionNueva) {
+                               long &versionCacheada, const char *urlNueva,
+                               long versionNueva) {
   if (urlNueva == nullptr || strlen(urlNueva) == 0) return;
-  if (versionNueva.length() == 0 || versionNueva == versionCacheada) return;
+  if (versionNueva <= 0 || versionNueva == versionCacheada) return;
 
   logLine(">> logo: version nueva para " + String(rutaLogo) + " (" +
           String(versionCacheada) + " -> " + String(versionNueva) + "), descargando...");
@@ -1553,11 +1557,9 @@ void hacerPoll() {
   // nunca seteado), default null/0 -> verificarYActualizarLogo() no
   // hace nada y la SD queda exactamente como estaba.
   const char *logoClienteUrl = doc["logo_cliente_url"] | (const char *)nullptr;
-  const char *logoClienteVerC = doc["logo_cliente_version"] | (const char *)nullptr;
-  String logoClienteVerNueva = logoClienteVerC ? String(logoClienteVerC) : String("");
+  long logoClienteVerNueva = doc["logo_cliente_version"] | (long)0;
   const char *logoNexoUrl = doc["logo_nexo_url"] | (const char *)nullptr;
-  const char *logoNexoVerC = doc["logo_nexo_version"] | (const char *)nullptr;
-  String logoNexoVerNueva = logoNexoVerC ? String(logoNexoVerC) : String("");
+  long logoNexoVerNueva = doc["logo_nexo_version"] | (long)0;
 
   if (sdDisponible) {
     verificarYActualizarLogo(RUTA_LOGO_CLIENTE, "/LOGO1VER.TXT", logoClienteVersionCache,
