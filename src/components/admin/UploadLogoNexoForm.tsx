@@ -54,8 +54,9 @@ export function UploadLogoNexoForm() {
           setError(err instanceof Error ? err.message : "No se pudo guardar el logo.");
         }
       });
-    } catch {
-      setError("No se pudo convertir la imagen. Probá con otro archivo (PNG o JPG).");
+    } catch (err) {
+      const detalle = err instanceof Error ? err.message : String(err);
+      setError(`No se pudo convertir la imagen (${detalle}). Probá con otro archivo (PNG o JPG).`);
       setUploading(false);
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = "";
