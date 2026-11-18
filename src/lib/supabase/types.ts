@@ -1,4 +1,4 @@
-export type Role = "admin" | "usuario";
+export type Role = "admin" | "usuario" | "operador";
 
 export type DeviceStatus = "unclaimed" | "claimed" | "revoked";
 
@@ -23,6 +23,11 @@ export interface Profile {
   display_name: string | null;
   mp_access_token: string | null;
   mp_user_id: string | null;
+  // Ver migración 0020 — sólo tienen sentido para role='operador'. Una
+  // cuenta de operador está atada a UNA sola máquina (null para
+  // cualquier otro rol) y el dueño la puede desactivar sin borrarla.
+  operator_device_id: string | null;
+  operator_active: boolean;
   created_at: string;
 }
 
@@ -134,7 +139,10 @@ export type DeviceEventType =
   | "restart_requested"
   | "firmware_update"
   | "clean_cycle"
-  | "restart_reason";
+  | "restart_reason"
+  // Ver migración 0020 — un operador le dio una ficha gratis a alguien
+  // desde su pantalla mínima (botón "Ficha gratis").
+  | "ficha_gratis";
 
 export interface DeviceEvent {
   id: string;

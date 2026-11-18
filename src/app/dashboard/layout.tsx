@@ -10,6 +10,7 @@ export default async function DashboardLayout({
   const { profile } = await requireActiveUser();
 
   if (profile.role === "admin") redirect("/admin/equipos");
+  if (profile.role === "operador") redirect("/operador");
 
   return (
     <div className="flex min-h-screen flex-col bg-bg md:flex-row">

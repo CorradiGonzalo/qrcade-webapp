@@ -6,6 +6,8 @@ import { CafeteraConfigForm } from "@/components/dashboard/CafeteraConfigForm";
 import { DeviceActions } from "@/components/dashboard/DeviceActions";
 import { DisplayPairingCard } from "@/components/dashboard/DisplayPairingCard";
 import { LogoClienteUploadForm } from "@/components/dashboard/LogoClienteUploadForm";
+import { OperadoresCard } from "@/components/dashboard/OperadoresCard";
+import { listOperadoresAction } from "@/lib/actions/devices";
 import { DeviceNameEditor } from "@/components/dashboard/DeviceNameEditor";
 import { FirmwareBanner } from "@/components/dashboard/FirmwareBanner";
 import { SalesPeriodFilter } from "@/components/dashboard/SalesPeriodFilter";
@@ -35,6 +37,8 @@ const EVENT_LABELS: Record<DeviceEvent["type"], string> = {
   // la última vez (heap bajo / WiFi caído / uptime / OTA / comando
   // remoto / factory reset / timeout de portal, ver cafetera v1.1.0).
   restart_reason: "🔁 Reinicio",
+  // Ver migración 0020 — un operador dio una ficha gratis.
+  ficha_gratis: "🎁 Ficha gratis",
 };
 
 export default async function DeviceDetailPage(
@@ -110,6 +114,21 @@ export default async function DeviceDetailPage(
     .eq("device_id", device.id)
     .order("created_at", { ascending: false })
     .limit(15);
+
+  // Ver migración 0020 — mismo filtro de período que Ventas, pero
+  // contando eventos de tipo 'ficha_gratis' en vez de mp_payments: una
+  // ficha gratis no es un pago, no tiene que mezclarse con lo que
+  // cobró Mercado Pago.
+  let fichasGratisQuery = supabase
+    .from("device_events")
+    .select("id", { count: "exact", head: true })
+    .eq("device_id", device.id)
+    .eq("type", "ficha_gratis");
+  if (rango.desde) fichasGratisQuery = fichasGratisQuery.gte("created_at", rango.desde.toISOString());
+  if (rango.hasta) fichasGratisQuery = fichasGratisQuery.lt("created_at", rango.hasta.toISOString());
+  const { count: totalFichasGratis } = await fichasGratisQuery;
+
+  const operadores = await listOperadoresAction(device.id);
 
   const acreditados = (pagos ?? []).filter((p) => (p.fichas_dispensed ?? 0) > 0);
   const totalFichas = acreditados.reduce((acc, p) => acc + (p.fichas_dispensed ?? 0), 0);
@@ -197,6 +216,13 @@ export default async function DeviceDetailPage(
             </div>
 
             <SalesPeriodFilter periodoActivo={rango.periodo} />
+
+            {(totalFichasGratis ?? 0) > 0 && (
+              <div className="mb-4 rounded-lg border border-line-soft bg-surface-2 px-3.5 py-2.5 text-xs">
+                <span className="text-ink-faint">Fichas Gratis: </span>
+                <span className="font-bold text-ink">{totalFichasGratis}</span>
+              </div>
+            )}
 
             {acreditados.length === 0 ? (
               <p className="text-xs text-ink-muted">
@@ -353,6 +379,10 @@ export default async function DeviceDetailPage(
               <LogoClienteUploadForm device={device} />
             </div>
           )}
+
+          <div className="mt-4">
+            <OperadoresCard deviceId={device.id} operadoresIniciales={operadores} />
+          </div>
 
           <div className="mt-4 rounded-2xl border border-line bg-surface p-5">
             <div className="mb-3 text-sm font-bold">Info del equipo</div>

@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { logDeviceEvent } from "@/lib/device-events";
-import { generateDisplayPairingCode } from "@/lib/device-codes";
+import { generateDisplayPairingCode, generateTemporaryPassword } from "@/lib/device-codes";
 import type { Device, Profile } from "@/lib/supabase/types";
 import {
   MercadoPagoError,
@@ -680,4 +680,129 @@ export async function claimDeviceAction(
 
   revalidatePath("/dashboard");
   return { ok: true };
+}
+
+// =====================================================================
+//   OPERADORES — sub-cuentas atadas a UNA máquina puntual (ver 0020)
+// =====================================================================
+// El dueño las crea/desactiva desde el panel de SU máquina -- no hace
+// falta ningún admin. Todas estas funciones primero confirman "sos
+// dueño de esta máquina" con el cliente normal (RLS de devices) y
+// recién después usan el cliente admin para las partes que RLS no deja
+// (crear un auth.user, leer/actualizar la fila de profiles de OTRA
+// persona) -- mismo criterio que ya usa createUserAction en admin.ts,
+// sólo que acá el que autoriza es el dueño, no un admin.
+
+async function confirmarDueñoDeMaquina(deviceId: string, userId: string) {
+  const admin = createAdminClient();
+  const { data } = await admin
+    .from("devices")
+    .select("id")
+    .eq("id", deviceId)
+    .eq("owner_id", userId)
+    .maybeSingle();
+  if (!data) throw new Error("No se encontró la máquina.");
+}
+
+export async function listOperadoresAction(deviceId: string) {
+  const { userId } = await ownedSupabase();
+  await confirmarDueñoDeMaquina(deviceId, userId);
+
+  const admin = createAdminClient();
+  const { data } = await admin
+    .from("profiles")
+    .select("id, username, display_name, operator_active, created_at")
+    .eq("operator_device_id", deviceId)
+    .order("created_at", { ascending: true })
+    .returns<
+      Pick<Profile, "id" | "username" | "display_name" | "operator_active" | "created_at">[]
+    >();
+
+  return data ?? [];
+}
+
+export async function createOperatorAction(
+  deviceId: string,
+  usernameInput: string,
+  displayNameInput: string
+): Promise<{ username: string; tempPassword: string }> {
+  const { userId } = await ownedSupabase();
+  await confirmarDueñoDeMaquina(deviceId, userId);
+
+  const username = usernameInput
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, "");
+  const displayName = displayNameInput.trim();
+
+  if (!username || username.length < 3) {
+    throw new Error("El usuario tiene que tener al menos 3 caracteres.");
+  }
+
+  const admin = createAdminClient();
+  const tempPassword = generateTemporaryPassword();
+  const internalEmail = `${username}@qrcade.internal`;
+
+  const { data: created, error: createError } = await admin.auth.admin.createUser({
+    email: internalEmail,
+    password: tempPassword,
+    email_confirm: true,
+  });
+
+  if (createError || !created.user) {
+    throw new Error(
+      createError?.message === "User already registered"
+        ? "Ya existe un usuario con ese nombre."
+        : "No se pudo crear el operador."
+    );
+  }
+
+  const { error: profileError } = await admin.from("profiles").insert({
+    id: created.user.id,
+    username,
+    display_name: displayName || null,
+    role: "operador",
+    operator_device_id: deviceId,
+    operator_active: true,
+    must_change_password: true,
+  });
+
+  if (profileError) {
+    // Rollback del auth.user para no dejar un usuario huérfano.
+    await admin.auth.admin.deleteUser(created.user.id);
+    throw new Error(
+      profileError.code === "23505"
+        ? "Ya existe un usuario con ese nombre."
+        : "No se pudo crear el operador."
+    );
+  }
+
+  revalidatePath(`/dashboard/maquinas/${deviceId}`);
+  return { username, tempPassword };
+}
+
+/**
+ * Activa/desactiva un operador existente -- NUNCA lo borra (mismo
+ * criterio que revocar una placa en vez de eliminarla): el historial de
+ * "quién dio qué ficha" en device_events sigue intacto, y si el dueño
+ * se arrepiente puede reactivarlo sin tener que crear la cuenta de
+ * nuevo ni avisarle una contraseña distinta.
+ */
+export async function setOperatorActiveAction(
+  profileId: string,
+  deviceId: string,
+  active: boolean
+) {
+  const { userId } = await ownedSupabase();
+  await confirmarDueñoDeMaquina(deviceId, userId);
+
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("profiles")
+    .update({ operator_active: active })
+    .eq("id", profileId)
+    .eq("operator_device_id", deviceId); // doble chequeo: nunca toca un profile que no sea operador DE ESTA máquina
+
+  if (error) throw new Error(error.message);
+  revalidatePath(`/dashboard/maquinas/${deviceId}`);
 }
