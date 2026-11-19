@@ -28,18 +28,17 @@ export function OperadoresCard({
   const [operadores, setOperadores] = useState(operadoresIniciales);
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [creado, setCreado] = useState<{ username: string; tempPassword: string } | null>(
-    null
-  );
+  const [creado, setCreado] = useState<{ username: string } | null>(null);
   const [formKey, setFormKey] = useState(0);
 
   function crear(formData: FormData) {
     setError(null);
     const username = String(formData.get("username") || "");
     const displayName = String(formData.get("display_name") || "");
+    const password = String(formData.get("password") || "");
     startTransition(async () => {
       try {
-        const resultado = await createOperatorAction(deviceId, username, displayName);
+        const resultado = await createOperatorAction(deviceId, username, displayName, password);
         setCreado(resultado);
         setOperadores((prev) => [
           ...prev,
@@ -113,19 +112,14 @@ export function OperadoresCard({
       {creado ? (
         <div className="rounded-lg border border-info-line bg-info-bg p-4">
           <div className="mb-2 text-xs font-semibold text-info">Operador creado ✓</div>
-          <div className="space-y-1 text-sm">
-            <div>
-              <span className="text-ink-faint">Usuario: </span>
-              <span className="font-mono font-semibold">{creado.username}</span>
-            </div>
-            <div>
-              <span className="text-ink-faint">Clave temporal: </span>
-              <span className="font-mono font-semibold">{creado.tempPassword}</span>
-            </div>
+          <div className="text-sm">
+            <span className="text-ink-faint">Usuario: </span>
+            <span className="font-mono font-semibold">{creado.username}</span>
           </div>
           <p className="mt-2 text-[11px] text-ink-faint">
-            Pasásela a mano — en su primer ingreso le va a pedir que la
-            cambie.
+            Pasale el usuario y la clave que elegiste — él no puede
+            cambiarla, así que si la olvidás la tenés que recrear acá
+            (desactivando esta cuenta y creando una nueva).
           </p>
           <button
             onClick={() => {
@@ -151,6 +145,16 @@ export function OperadoresCard({
             placeholder="Nombre (opcional, ej: Kevin)"
             className="w-full rounded-lg border border-line-soft bg-surface-2 px-3.5 py-2.5 text-sm outline-none focus:border-brand"
           />
+          <input
+            name="password"
+            required
+            minLength={6}
+            placeholder="Clave (mínimo 6 caracteres)"
+            className="w-full rounded-lg border border-line-soft bg-surface-2 px-3.5 py-2.5 text-sm outline-none focus:border-brand"
+          />
+          <p className="text-[11px] text-ink-faint">
+            Esta clave la elegís vos. El operador no la puede cambiar.
+          </p>
           {error && <p className="text-xs font-medium text-danger">{error}</p>}
           <button
             type="submit"

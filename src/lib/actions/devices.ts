@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { logDeviceEvent } from "@/lib/device-events";
-import { generateDisplayPairingCode, generateTemporaryPassword } from "@/lib/device-codes";
+import { generateDisplayPairingCode } from "@/lib/device-codes";
 import type { Device, Profile } from "@/lib/supabase/types";
 import {
   MercadoPagoError,
@@ -724,8 +724,9 @@ export async function listOperadoresAction(deviceId: string) {
 export async function createOperatorAction(
   deviceId: string,
   usernameInput: string,
-  displayNameInput: string
-): Promise<{ username: string; tempPassword: string }> {
+  displayNameInput: string,
+  passwordInput: string
+): Promise<{ username: string }> {
   const { userId } = await ownedSupabase();
   await confirmarDueñoDeMaquina(deviceId, userId);
 
@@ -734,18 +735,21 @@ export async function createOperatorAction(
     .toLowerCase()
     .replace(/[^a-z0-9._-]/g, "");
   const displayName = displayNameInput.trim();
+  const password = passwordInput.trim();
 
   if (!username || username.length < 3) {
     throw new Error("El usuario tiene que tener al menos 3 caracteres.");
   }
+  if (password.length < 6) {
+    throw new Error("La clave tiene que tener al menos 6 caracteres.");
+  }
 
   const admin = createAdminClient();
-  const tempPassword = generateTemporaryPassword();
   const internalEmail = `${username}@qrcade.internal`;
 
   const { data: created, error: createError } = await admin.auth.admin.createUser({
     email: internalEmail,
-    password: tempPassword,
+    password,
     email_confirm: true,
   });
 
@@ -757,6 +761,11 @@ export async function createOperatorAction(
     );
   }
 
+  // A diferencia de un usuario normal: la clave la elige el DUEÑO acá
+  // mismo, así que nunca pasa por /primer-ingreso ni puede cambiarla
+  // -- must_change_password queda en false a propósito (el operador no
+  // tiene ninguna pantalla desde donde cambiarla igual, pero así
+  // tampoco queda "pendiente" en ningún listado de admin).
   const { error: profileError } = await admin.from("profiles").insert({
     id: created.user.id,
     username,
@@ -764,7 +773,7 @@ export async function createOperatorAction(
     role: "operador",
     operator_device_id: deviceId,
     operator_active: true,
-    must_change_password: true,
+    must_change_password: false,
   });
 
   if (profileError) {
@@ -778,7 +787,7 @@ export async function createOperatorAction(
   }
 
   revalidatePath(`/dashboard/maquinas/${deviceId}`);
-  return { username, tempPassword };
+  return { username };
 }
 
 /**
